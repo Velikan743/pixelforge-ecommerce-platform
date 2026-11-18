@@ -21,6 +21,10 @@ npm run server
 
 Without `MONGODB_URI`, the read-only catalogue API serves the included demo products from memory. Endpoints are `GET /api/health`, `GET /api/products?q=&category=&page=&limit=`, and `GET /api/products/:id`.
 
+## Host the storefront on GitHub Pages
+
+The `Deploy TechParts to GitHub Pages` workflow builds and deploys the static storefront when changes are pushed to `main`. In the repository’s **Settings → Pages**, set the build and deployment source to **GitHub Actions**. The storefront can use demo catalogue data on Pages; the Express API and MongoDB database need a separate server deployment for live data and orders.
+
 ## Current scope
 
 The demo includes category browsing, search, price sorting, a client-side shopping bag, light and dark themes, and a guided PC build view. Account flows, inventory editing, order placement, compatibility rules backed by verified hardware data, tax and shipping calculation, and payment processing need their respective services and business data before they can be enabled safely.
