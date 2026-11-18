@@ -34,6 +34,7 @@ jobs:
         run: npm run build
         env:
           GITHUB_PAGES: 'true'
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
       - name: Add Pages marker
         run: touch dist/.nojekyll
       - name: Configure Pages
