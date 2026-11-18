@@ -19,14 +19,20 @@ const categories = [
 ];
 const money = n => '₹' + n.toLocaleString('en-IN');
 const photo = id => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=720&q=82`;
+const loadSavedProducts = key => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(saved) ? saved.filter(item => !/samsung/i.test(`${item?.name || ''} ${item?.model || ''}`)) : [];
+  } catch { return []; }
+};
 
 function App() {
   const [dark, setDark] = useState(() => localStorage.getItem('techparts-theme') === 'dark');
   const [active, setActive] = useState('All components');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('Featured');
-  const [cart, setCart] = useState(() => JSON.parse(localStorage.getItem('techparts-cart') || '[]'));
-  const [wishlist, setWishlist] = useState(() => JSON.parse(localStorage.getItem('techparts-wishlist') || '[]'));
+  const [cart, setCart] = useState(() => loadSavedProducts('techparts-cart'));
+  const [wishlist, setWishlist] = useState(() => loadSavedProducts('techparts-wishlist'));
   const [orders, setOrders] = useState(() => JSON.parse(localStorage.getItem('techparts-orders') || '[]'));
   const [compare, setCompare] = useState([]);
   const [details, setDetails] = useState(null);
