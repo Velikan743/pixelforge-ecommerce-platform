@@ -1,7 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import { promisify } from 'node:util';
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { products as seedProducts } from '../src/product-data.js';
@@ -24,7 +24,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products'))) {
     return res.status(403).json({ error: 'This site is not allowed to use the account service.' });
@@ -35,11 +35,14 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '32kb' }));
 
 const productSchema = new mongoose.Schema({
+  id: { type: String, index: true },
   name: { type: String, required: true, trim: true },
   model: { type: String, default: '' },
   category: { type: String, required: true, index: true },
+  description: { type: String, default: '', maxlength: 4000 },
   price: { type: Number, required: true, min: 0 },
   old: { type: Number, min: 0 },
+  stock: { type: Number, min: 0, default: 0 },
   rating: { type: String, default: '0' },
   reviews: { type: Number, default: 0 },
   badge: { type: String, default: '' },
@@ -48,6 +51,41 @@ const productSchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 productSchema.index({ name: 'text', model: 'text', category: 'text' });
 const Product = mongoose.models.Product || mongoose.model('Product', productSchema);
+const productCategories = new Set(['Graphics Cards', 'Processors', 'Motherboards', 'Memory', 'Storage', 'Power', 'Cases', 'Cooling', 'Monitors', 'Peripherals', 'Accessories']);
+const productColors = new Set(['lavender', 'mint', 'peach', 'blue']);
+const defaultProductDescription = 'Demo catalogue product. Confirm specifications and availability before purchase.';
+
+function productJson(product) {
+  const record = typeof product.toObject === 'function' ? product.toObject() : product;
+  return { ...record, id: String(record.id || record._id) };
+}
+async function findProductById(id) {
+  const byPublicId = await Product.findOne({ id: String(id) });
+  if (byPublicId) return byPublicId;
+  return mongoose.isValidObjectId(id) ? Product.findById(id) : null;
+}
+function parseProductInput(body) {
+  const name = String(body?.name || '').trim();
+  const model = String(body?.model || '').trim();
+  const category = String(body?.category || '');
+  const description = String(body?.description || '').trim();
+  const regularPrice = Number(body?.regularPrice);
+  const discountPercent = Number(body?.discountPercent || 0);
+  const stock = Number(body?.stock);
+  const image = String(body?.image || 'photo-1591488320449-011701bb6704').trim();
+  const color = String(body?.color || 'blue');
+  if (name.length < 2 || name.length > 120) return { error: 'Product name must be between 2 and 120 characters.' };
+  if (model.length > 180) return { error: 'Product model details must be 180 characters or less.' };
+  if (!productCategories.has(category)) return { error: 'Choose a valid product category.' };
+  if (!Number.isFinite(regularPrice) || regularPrice < 1 || regularPrice > 100000000) return { error: 'Enter a valid price greater than zero.' };
+  if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 90) return { error: 'Discount must be between 0 and 90 percent.' };
+  if (!Number.isInteger(stock) || stock < 0 || stock > 10000000) return { error: 'Stock must be a whole number between 0 and 10,000,000.' };
+  if (description.length > 4000) return { error: 'Description must be 4,000 characters or less.' };
+  if (image.length > 120) return { error: 'Image identifier must be 120 characters or less.' };
+  if (!productColors.has(color)) return { error: 'Choose a valid product color.' };
+  const price = Math.round(regularPrice * (1 - discountPercent / 100));
+  return { value: { name, model, category, description, price, old: discountPercent ? regularPrice : undefined, stock, image, color } };
+}
 
 const accountSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 80 },
@@ -202,11 +240,55 @@ app.post('/api/auth/logout', requireAuth, async (req, res, next) => {
 
 app.get('/api/admin/summary', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (_req, res, next) => {
   try {
-    const [customers, productCount] = await Promise.all([
+    const [customers, inventory] = await Promise.all([
       Account.countDocuments({ role: 'customer' }),
-      mongoose.connection.readyState === 1 ? Product.countDocuments() : Promise.resolve(seedProducts.length),
+      Product.find({}, { price: 1, stock: 1 }).lean(),
     ]);
-    res.json({ customers, products: productCount || seedProducts.length });
+    const stockCounts = inventory.reduce((summary, product) => {
+      const stock = Math.max(0, Number(product.stock) || 0);
+      summary.inventoryValue += (Number(product.price) || 0) * stock;
+      if (stock === 0) summary.outOfStock += 1;
+      else {
+        summary.inStock += 1;
+        if (stock <= 5) summary.lowStock += 1;
+      }
+      return summary;
+    }, { inStock: 0, lowStock: 0, outOfStock: 0, inventoryValue: 0 });
+    res.json({ customers, products: inventory.length, ...stockCounts });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/admin/products', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (_req, res, next) => {
+  try {
+    const products = await Product.find({}).sort({ category: 1, name: 1 }).lean();
+    res.json({ items: products.map(productJson) });
+  } catch (error) { next(error); }
+});
+app.post('/api/admin/products', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (req, res, next) => {
+  try {
+    const parsed = parseProductInput(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const product = await Product.create({ id: randomUUID(), ...parsed.value });
+    res.status(201).json({ product: productJson(product) });
+  } catch (error) { next(error); }
+});
+app.put('/api/admin/products/:id', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (req, res, next) => {
+  try {
+    const parsed = parseProductInput(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const product = await findProductById(req.params.id);
+    if (!product) return res.status(404).json({ error: 'Product not found.' });
+    Object.assign(product, parsed.value);
+    await product.save();
+    res.json({ product: productJson(product) });
+  } catch (error) { next(error); }
+});
+app.delete('/api/admin/products/:id', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (req, res, next) => {
+  try {
+    const product = await findProductById(req.params.id);
+    if (!product) return res.status(404).json({ error: 'Product not found.' });
+    await product.deleteOne();
+    res.json({ ok: true, id: String(product.id || product._id) });
   } catch (error) { next(error); }
 });
 
@@ -228,17 +310,17 @@ app.get('/api/products', requireAuth, requirePasswordChangeComplete, async (req,
       Product.find(filter).sort({ createdAt: -1, _id: 1 }).skip((safePage - 1) * safeLimit).limit(safeLimit).lean(),
       Product.countDocuments(filter),
     ]);
-    res.json({ items, total, page: safePage, pages: Math.ceil(total / safeLimit) });
+    res.json({ items: items.map(productJson), total, page: safePage, pages: Math.ceil(total / safeLimit) });
   } catch (error) { next(error); }
 });
 app.get('/api/products/:id', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
   try {
     const databaseHasProducts = mongoose.connection.readyState === 1 && await Product.exists({});
     const item = databaseHasProducts
-      ? mongoose.isValidObjectId(req.params.id) ? await Product.findById(req.params.id).lean() : null
+      ? await findProductById(req.params.id)
       : seedProducts.find(p => String(p.id) === req.params.id);
     if (!item) return res.status(404).json({ error: 'Product not found' });
-    res.json(item);
+    res.json(productJson(item));
   } catch (error) { next(error); }
 });
 
@@ -273,11 +355,23 @@ async function seedAdminAccount() {
   console.log(`Provisioned initial admin account: ${email}`);
 }
 
+async function seedCatalogue() {
+  if (await Product.exists({})) return;
+  await Product.insertMany(seedProducts.map(product => ({
+    ...product,
+    id: String(product.id),
+    description: defaultProductDescription,
+    stock: 0,
+  })));
+  console.log(`Loaded ${seedProducts.length} starter catalogue items; set real prices and stock from the admin page.`);
+}
+
 async function start() {
   if (sameSite === 'none' && !secureCookie) throw new Error('SameSite=None cookies require COOKIE_SECURE=true.');
   if (process.env.MONGODB_URI) {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-    await Promise.all([Account.init(), Session.init()]);
+    await Promise.all([Account.init(), Session.init(), Product.init()]);
+    await seedCatalogue();
     await seedAdminAccount();
     console.log('Connected to MongoDB; account sessions enabled');
   } else {

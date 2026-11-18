@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, EyeOff, Gamepad2, Headphones, Heart, LockKeyhole, Mail, Menu, Moon, Monitor, PackageCheck, Search, ShieldCheck, ShoppingBag, SlidersHorizontal, Sparkles, Sun, Truck, UserRound, X, Zap } from 'lucide-react';
+import { AlertTriangle, ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, EyeOff, Gamepad2, Headphones, Heart, LockKeyhole, Mail, Menu, Moon, Monitor, PackageCheck, Pencil, Plus, Search, ShieldCheck, ShoppingBag, SlidersHorizontal, Sparkles, Sun, Trash2, Truck, UserRound, X, Zap } from 'lucide-react';
 import { products } from './product-data.js';
 import './styles.css';
 
@@ -64,6 +64,7 @@ function App() {
         if (response.ok) {
           const data = await response.json();
           setAuth({ status: 'authenticated', account: data.account, message: '' });
+          setAdminPage(data.account.role === 'admin');
         } else if (response.status === 401) setAuth({ status: 'unauthenticated', account: null, message: '' });
         else setAuth({ status: 'unavailable', account: null, message: 'The account service is not ready. Check the database and API setup.' });
       })
@@ -122,6 +123,7 @@ function App() {
   function handleAuthenticated(account) {
     setStorageReady(false);
     setAuth({ status: 'authenticated', account, message: '' });
+    setAdminPage(account.role === 'admin');
   }
   async function signOut() {
     try { await apiRequest('/api/auth/logout', { method: 'POST', body: '{}' }); } catch { /* Clear this browser view even if the server is unavailable. */ }
@@ -198,7 +200,7 @@ function App() {
       <div className="header-actions"><label className="search-box"><Search size={17}/><input aria-label="Search products" placeholder="Search components..." value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌘ K</kbd></label><span className="account-chip" title={auth.account.email}><UserRound size={15}/><span>{auth.account.name}</span>{auth.account.role === 'admin' && <b>ADMIN</b>}</span><button className="signout-button" onClick={signOut}>Sign out</button><button className="icon-button theme-button" aria-label="Toggle theme" onClick={toggleTheme}>{dark?<Sun size={18}/>:<Moon size={18}/>}</button><button className="wishlist-header" onClick={()=>setShowWishlist(true)} aria-label={`Wishlist, ${wishlist.length} products`}><Heart size={18}/><span>Saved</span>{wishlist.length>0&&<b>{wishlist.length}</b>}</button><button className="bag-button" onClick={()=>setDrawer(true)} aria-label={`Shopping bag, ${cartCount} items`}><ShoppingBag size={19}/><span>Bag</span><b>{cartCount}</b></button><button className="icon-button menu-button" onClick={()=>setMobileMenu(!mobileMenu)} aria-label="Toggle navigation">{mobileMenu?<X size={20}/>:<Menu size={20}/>}</button></div>
     </header>
     <main>
-      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage items={cart} total={cartTotal} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
+      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account} onShop={()=>setAdminPage(false)}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage items={cart} total={cartTotal} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
         <section className="hero" id="home">
           <div className="hero-copy"><div className="eyebrow"><span className="eyebrow-line"/>THE NEXT LEVEL STARTS HERE</div><h1>Your setup.<br/>Your <em>story.</em></h1><p>Thoughtful gear for the way you play, create, and work. Find your next favorite piece.</p><div className="hero-buttons"><a className="button-primary" href="#products">Explore components <ArrowRight size={16}/></a><button className="button-text" onClick={()=>setBuilder(true)}>Build your PC <ArrowUpRight size={15}/></button></div><div className="hero-proof"><div className="avatars"><span>R</span><span>A</span><span>K</span><span>+</span></div><div><strong>Loved by 12,000+ builders</strong><small>★★★★★ <span>4.9 / 5 average rating</span></small></div></div></div>
           <div className="hero-art"><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-glow"/><div className="hero-product"><img src={photo('photo-1587202372775-e229f172b9d7')} alt="High-performance graphics card"/><span className="floating-tag tag-top"><span className="tag-dot"/>NEW DROP <strong>RTX 50 SERIES</strong></span><span className="floating-tag tag-bottom"><span className="tag-icon"><Zap size={17}/></span><span>Built for more<small>Make every frame count</small></span><ArrowUpRight size={17}/></span></div><div className="hero-scribble">MAKE<br/>IT YOURS<span>↗</span></div><span className="hero-index">01 / 04</span></div>
@@ -273,20 +275,94 @@ function AuthGate({ onAuthenticated, initialMessage = '' }) {
   </main>;
 }
 
-function AdminPage({ account }) {
+function AdminPage({ account, onShop }) {
   const [summary, setSummary] = useState(null);
+  const [items, setItems] = useState([]);
   const [error, setError] = useState('');
-  useEffect(() => {
-    let current = true;
-    apiRequest('/api/admin/summary').then(async response => {
+  const [loading, setLoading] = useState(true);
+  const [section, setSection] = useState('overview');
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('All categories');
+  const [editor, setEditor] = useState(undefined);
+  const [saving, setSaving] = useState(false);
+
+  async function refresh() {
+    setLoading(true); setError('');
+    try {
+      const [summaryResponse, productsResponse] = await Promise.all([
+        apiRequest('/api/admin/summary'), apiRequest('/api/admin/products'),
+      ]);
+      const [summaryData, productsData] = await Promise.all([summaryResponse.json(), productsResponse.json()]);
+      if (!summaryResponse.ok) throw new Error(summaryData.error || 'Could not load dashboard indicators.');
+      if (!productsResponse.ok) throw new Error(productsData.error || 'Could not load products.');
+      setSummary(summaryData); setItems(productsData.items || []);
+    } catch (requestError) { setError(requestError.message || 'Could not reach the admin service.'); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { refresh(); }, []);
+
+  const filtered = items.filter(product => {
+    const matchesQuery = `${product.name} ${product.model} ${product.category}`.toLowerCase().includes(query.trim().toLowerCase());
+    return matchesQuery && (category === 'All categories' || product.category === category);
+  });
+
+  async function saveProduct(formValue) {
+    setSaving(true); setError('');
+    try {
+      const editing = Boolean(editor?.id);
+      const path = editing ? `/api/admin/products/${encodeURIComponent(editor.id)}` : '/api/admin/products';
+      const response = await apiRequest(path, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(formValue) });
       const data = await response.json();
-      if (!current) return;
-      if (response.ok) setSummary(data);
-      else setError(data.error || 'Could not load the admin summary.');
-    }).catch(() => { if (current) setError('Cannot reach the admin service.'); });
-    return () => { current = false; };
-  }, []);
-  return <section className="admin-page"><div className="eyebrow"><span className="eyebrow-line"/>ADMINISTRATION</div><h1>Welcome, <em>{account.name}.</em></h1><p>Signed in as {account.email} with administrator access.</p>{error ? <div className="auth-preview-message">{error}</div> : summary ? <div className="admin-summary"><article><span>Customer accounts</span><b>{summary.customers}</b></article><article><span>Products in catalogue</span><b>{summary.products}</b></article></div> : <div className="auth-loading"><b>Loading account summary…</b></div>}</section>;
+      if (!response.ok) throw new Error(data.error || 'Could not save the product.');
+      setEditor(undefined);
+      await refresh();
+    } catch (saveError) { setError(saveError.message || 'Could not save the product.'); }
+    finally { setSaving(false); }
+  }
+  async function deleteProduct(product) {
+    if (!window.confirm(`Delete “${product.name}” from the catalogue?`)) return;
+    setError('');
+    try {
+      const response = await apiRequest(`/api/admin/products/${encodeURIComponent(product.id)}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not delete the product.');
+      await refresh();
+    } catch (deleteError) { setError(deleteError.message || 'Could not delete the product.'); }
+  }
+
+  return <section className="admin-page">
+    <div className="admin-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>TECHPARTS ADMIN</div><h1>Admin <em>workspace.</em></h1><p>Signed in as {account.email}</p></div><button className="button-text admin-store-link" onClick={onShop}>View storefront <ArrowUpRight size={15}/></button></div>
+    <div className="admin-tabs" role="tablist" aria-label="Admin sections"><button className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}>Overview</button><button className={section === 'products' ? 'selected' : ''} onClick={() => setSection('products')}>Product management <span>{items.length}</span></button></div>
+    {error && <div className="admin-error" role="alert"><AlertTriangle size={15}/>{error}<button onClick={() => setError('')} aria-label="Dismiss message"><X size={15}/></button></div>}
+    {loading && !summary ? <div className="admin-loading">Loading your dashboard…</div> : section === 'overview' ? <>
+      <div className="admin-kpi-grid">
+        <AdminKpi label="Catalogue products" value={summary?.products ?? '—'} detail="Items listed in the store"/>
+        <AdminKpi label="In stock" value={summary?.inStock ?? '—'} detail="Products with available units"/>
+        <AdminKpi label="Low stock" value={summary?.lowStock ?? '—'} detail="Five units or fewer" tone="warning"/>
+        <AdminKpi label="Out of stock" value={summary?.outOfStock ?? '—'} detail="Needs an inventory update" tone="muted"/>
+        <AdminKpi label="Inventory value" value={summary ? money(summary.inventoryValue) : '—'} detail="Current price × units in stock"/>
+        <AdminKpi label="Customer accounts" value={summary?.customers ?? '—'} detail="Registered customer accounts"/>
+      </div>
+      <div className="admin-overview-grid"><section className="admin-panel"><div className="admin-panel-head"><div><span className="eyebrow">INVENTORY CHECK</span><h2>Needs attention</h2></div><button className="text-action" onClick={() => setSection('products')}>Manage products <ArrowRight size={14}/></button></div>{items.filter(product => Number(product.stock) <= 5).slice(0, 6).length ? <div className="attention-list">{items.filter(product => Number(product.stock) <= 5).slice(0, 6).map(product => <div key={product.id}><span><b>{product.name}</b><small>{product.category}</small></span><strong className={Number(product.stock) === 0 ? 'stock-out' : 'stock-low'}>{Number(product.stock) === 0 ? 'Out of stock' : `${product.stock} left`}</strong></div>)}</div> : <p className="admin-empty-note">All products have more than five units in stock.</p>}</section><section className="admin-panel admin-preview-panel"><span className="admin-preview-icon"><ShieldCheck size={18}/></span><span className="eyebrow">STORE REPORTING</span><h2>Orders and revenue</h2><p>Sales KPIs will appear here when real order and payment processing is connected. The current checkout is a preview.</p></section></div>
+    </> : <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CATALOGUE</span><h2>Product management <span>({filtered.length})</span></h2></div><button className="button-primary admin-add-button" onClick={() => setEditor(null)}><Plus size={16}/> Add product</button></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search products…" aria-label="Search products"/></label><select value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter by category"><option>All categories</option>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></div>{filtered.length ? <div className="admin-table-scroll"><table className="admin-product-table"><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><span className="admin-product-name"><b>{product.name}</b><small>{product.model}</small></span></td><td>{product.category}</td><td><b>{money(product.price)}</b>{product.old > product.price && <small className="admin-discount-tag">{Math.round((1-product.price/product.old)*100)}% off</small>}</td><td><span className={`admin-stock-pill ${product.stock > 5 ? 'stock-good' : product.stock > 0 ? 'stock-low-bg' : 'stock-zero'}`}>{product.stock ?? 0} units</span></td><td><span className="admin-row-actions"><button onClick={() => setEditor(product)} aria-label={`Edit ${product.name}`} title="Edit product"><Pencil size={15}/></button><button className="danger-action" onClick={() => deleteProduct(product)} aria-label={`Delete ${product.name}`} title="Delete product"><Trash2 size={15}/></button></span></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No products match this search.</div>}</section>}
+    {editor !== undefined && <ProductEditor product={editor} saving={saving} onClose={() => setEditor(undefined)} onSave={saveProduct}/>}
+  </section>;
+}
+
+function AdminKpi({label,value,detail,tone=''}) {
+  return <article className={`admin-kpi ${tone}`}><span>{label}</span><b>{value}</b><small>{detail}</small></article>;
+}
+
+function ProductEditor({product,saving,onClose,onSave}) {
+  const isEditing = Boolean(product?.id);
+  const regularPrice = isEditing && product.old > product.price ? product.old : product?.price ?? '';
+  const discount = isEditing && product.old > product.price ? Math.round((1-product.price/product.old)*100) : 0;
+  async function submit(event) {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
+    await onSave({ ...values, regularPrice: Number(values.regularPrice), discountPercent: Number(values.discountPercent || 0), stock: Number(values.stock) });
+  }
+  return <div className="admin-modal-layer" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="admin-editor" role="dialog" aria-modal="true" aria-label={isEditing ? 'Edit product' : 'Add product'}><header className="admin-editor-head"><div><span className="eyebrow">{isEditing ? 'UPDATE CATALOGUE' : 'NEW CATALOGUE ITEM'}</span><h2>{isEditing ? 'Edit product' : 'Add product'}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close editor"><X size={19}/></button></header><form className="admin-editor-form" onSubmit={submit}><label className="admin-field-wide">Product name<input name="name" required minLength="2" maxLength="120" defaultValue={product?.name || ''} placeholder="Product name"/></label><label className="admin-field-wide">Model / short specs<input name="model" maxLength="180" defaultValue={product?.model || ''} placeholder="Brand · key specifications"/></label><label>Category<select name="category" defaultValue={product?.category || categories[0].name}>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></label><label>Stock units<input name="stock" type="number" required min="0" step="1" defaultValue={product?.stock ?? 0}/></label><label>Regular price (₹)<input name="regularPrice" type="number" required min="1" step="1" defaultValue={regularPrice}/></label><label>Discount (%)<input name="discountPercent" type="number" min="0" max="90" step="1" defaultValue={discount}/></label><label className="admin-field-wide">Description<textarea name="description" maxLength="4000" rows="4" defaultValue={product?.description || ''} placeholder="Product details shown to customers"/></label><label>Image ID<input name="image" maxLength="120" defaultValue={product?.image || 'photo-1591488320449-011701bb6704'} placeholder="photo-…"/></label><label>Image tint<select name="color" defaultValue={product?.color || 'blue'}><option value="blue">Blue</option><option value="lavender">Lavender</option><option value="mint">Mint</option><option value="peach">Peach</option></select></label><div className="admin-editor-actions"><button type="button" className="button-text" onClick={onClose}>Cancel</button><button className="button-primary" disabled={saving}>{saving ? 'Saving…' : isEditing ? 'Save changes' : 'Add product'} <ArrowRight size={15}/></button></div></form></section></div>;
 }
 
 function PasswordSetup({ account, onComplete, onSignOut }) {
@@ -312,7 +388,9 @@ function PasswordSetup({ account, onComplete, onSignOut }) {
 }
 
 function ProductCard({product:p,onAdd,onDetails,onWishlist,onCompare,saved,compared}) {
-  return <article className="product-card"><div className={`product-image ${p.color}`}><img src={photo(p.image)} alt={p.name} loading="lazy"/><span className="image-shade"/>{p.badge&&<span className="product-badge">{p.badge}</span>}<button className={saved?'wishlist liked':'wishlist'} onClick={()=>onWishlist(p)} aria-label={saved?'Remove from wishlist':'Add to wishlist'}><Heart size={16} fill={saved?'currentColor':'none'}/></button><button className="quick-add" onClick={()=>onAdd(p)}><span>Quick add</span><span className="quick-add-icon"><ShoppingBag size={15}/></span></button></div><div className="product-info"><div className="product-model">{p.category} <span>·</span> {p.model.split('·')[0]}</div><button className="product-title" onClick={()=>onDetails(p)}>{p.name}</button><Rating product={p}/><div className="price-row"><b>{money(p.price)}</b><del>{money(p.old)}</del><span className="discount">{Math.round((1-p.price/p.old)*100)}% off</span></div><button className={compared?'compare-product selected':'compare-product'} onClick={()=>onCompare(p)}>{compared?<Check size={12}/>:<SlidersHorizontal size={12}/>} {compared?'Added to compare':'Compare'}</button></div></article>;
+  const outOfStock = p.stock !== undefined && Number(p.stock) <= 0;
+  const discounted = Number(p.old) > Number(p.price);
+  return <article className="product-card"><div className={`product-image ${p.color}`}><img src={photo(p.image)} alt={p.name} loading="lazy"/><span className="image-shade"/>{p.badge&&<span className="product-badge">{p.badge}</span>}<button className={saved?'wishlist liked':'wishlist'} onClick={()=>onWishlist(p)} aria-label={saved?'Remove from wishlist':'Add to wishlist'}><Heart size={16} fill={saved?'currentColor':'none'}/></button><button className="quick-add" onClick={()=>onAdd(p)} disabled={outOfStock}><span>{outOfStock?'Out of stock':'Quick add'}</span><span className="quick-add-icon"><ShoppingBag size={15}/></span></button></div><div className="product-info"><div className="product-model">{p.category} <span>·</span> {p.model.split('·')[0]}</div><button className="product-title" onClick={()=>onDetails(p)}>{p.name}</button><Rating product={p}/>{p.stock!==undefined&&<small className={outOfStock?'product-stock-note stock-out':'product-stock-note'}>{outOfStock?'Out of stock':`${p.stock} in stock`}</small>}<div className="price-row"><b>{money(p.price)}</b>{discounted&&<><del>{money(p.old)}</del><span className="discount">{Math.round((1-p.price/p.old)*100)}% off</span></>}</div><button className={compared?'compare-product selected':'compare-product'} onClick={()=>onCompare(p)}>{compared?<Check size={12}/>:<SlidersHorizontal size={12}/>} {compared?'Added to compare':'Compare'}</button></div></article>;
 }
 
 function Rating({product:p}) {
@@ -321,7 +399,9 @@ function Rating({product:p}) {
 
 function ProductDetails({product:p,onClose,onAdd,saved,onWishlist}) {
   useEffect(()=>{function onKey(e){if(e.key==='Escape')onClose()}window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[onClose]);
-  return <div className="modal-layer" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="product-modal" role="dialog" aria-modal="true" aria-label={`${p.name} details`}><button className="modal-close icon-button" onClick={onClose} aria-label="Close"><X size={19}/></button><div className={`detail-image ${p.color}`}><img src={photo(p.image)} alt={p.name}/>{p.badge&&<span className="product-badge">{p.badge}</span>}</div><div className="detail-copy"><span className="eyebrow"><span className="eyebrow-line"/>{p.category.toUpperCase()}</span><h2>{p.name}</h2><p className="detail-model">{p.model}</p><Rating product={p}/><div className="detail-price"><b>{money(p.price)}</b><del>{money(p.old)}</del><span className="discount">{Math.round((1-p.price/p.old)*100)}% off</span></div><p className="detail-description">A community favorite, selected for dependable everyday performance and backed by our genuine product guarantee.</p><div className="detail-points"><span><Check size={14}/> Authorized product</span><span><Truck size={14}/> Free delivery over ₹2,000</span><span><ShieldCheck size={14}/> 7-day easy returns</span></div><div className="detail-actions"><button className="button-primary" onClick={()=>onAdd(p)}>Add to bag <ShoppingBag size={15}/></button><button className={saved?'detail-save saved':'detail-save'} onClick={onWishlist}><Heart size={16} fill={saved?'currentColor':'none'}/>{saved?'Saved':'Save for later'}</button></div><small className="demo-note">Demo catalogue item · final specs and availability to be confirmed</small></div></section></div>;
+  const outOfStock = p.stock !== undefined && Number(p.stock) <= 0;
+  const discounted = Number(p.old) > Number(p.price);
+  return <div className="modal-layer" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="product-modal" role="dialog" aria-modal="true" aria-label={`${p.name} details`}><button className="modal-close icon-button" onClick={onClose} aria-label="Close"><X size={19}/></button><div className={`detail-image ${p.color}`}><img src={photo(p.image)} alt={p.name}/>{p.badge&&<span className="product-badge">{p.badge}</span>}</div><div className="detail-copy"><span className="eyebrow"><span className="eyebrow-line"/>{p.category.toUpperCase()}</span><h2>{p.name}</h2><p className="detail-model">{p.model}</p><Rating product={p}/>{p.stock!==undefined&&<small className={outOfStock?'product-stock-note stock-out':'product-stock-note'}>{outOfStock?'Out of stock':`${p.stock} in stock`}</small>}<div className="detail-price"><b>{money(p.price)}</b>{discounted&&<><del>{money(p.old)}</del><span className="discount">{Math.round((1-p.price/p.old)*100)}% off</span></>}</div><p className="detail-description">{p.description || 'A community favorite, selected for dependable everyday performance. Confirm specifications and availability before purchase.'}</p><div className="detail-points"><span><Check size={14}/> Product details</span><span><Truck size={14}/> Delivery details at checkout</span><span><ShieldCheck size={14}/> Store preview</span></div><div className="detail-actions"><button className="button-primary" onClick={()=>onAdd(p)} disabled={outOfStock}>{outOfStock?'Out of stock':'Add to bag'} {!outOfStock&&<ShoppingBag size={15}/>}</button><button className={saved?'detail-save saved':'detail-save'} onClick={onWishlist}><Heart size={16} fill={saved?'currentColor':'none'}/>{saved?'Saved':'Save for later'}</button></div><small className="demo-note">Demo catalogue item · final specs and availability to be confirmed</small></div></section></div>;
 }
 
 function CollectionDialog({title,eyebrow,products:items,empty,onClose,onAdd,onRemove,onOpen}) {
