@@ -1,30 +1,26 @@
 # TechParts
 
-A responsive computer parts storefront and PC builder built with React, Vite, Express, and MongoDB. The initial catalogue is demo data, so the storefront and API can be explored before connecting a database.
+### PC components for your next build
 
-## Start the storefront
+**Live website: [Open TechParts](https://velikan743.github.io/pixelforge-ecommerce-platform/)**
 
-```sh
-npm install
-npm run dev
-```
+TechParts is a PC components storefront demo for browsing parts, comparing options, and planning a build.
 
-The Vite development server runs the customer interface and forwards `/api` requests to port 4000.
+## Explore the website
 
-## Start the API
+- Browse graphics cards, processors, motherboards, memory, storage, power supplies, cases, cooling, monitors, peripherals, and accessories.
+- Search and sort the catalogue, then open product details or compare products.
+- Save products to a wishlist and add items to the shopping bag.
+- Try the guided PC builder, switch between light and dark themes, and explore the checkout preview.
 
-Copy `.env.example` to `.env`, set `MONGODB_URI` to a MongoDB connection string, then run:
+## Demo information
 
-```sh
-npm run server
-```
+This is a portfolio project and storefront preview. Catalogue prices, availability, ratings, delivery details, and compatibility need confirmation before a real sale. The bag, wishlist, and order history are browser demos; checkout does not place an order, arrange delivery, or process payment. The live website does not currently provide working customer accounts or admin sign-in.
 
-Without `MONGODB_URI`, the read-only catalogue API serves the included demo products from memory. Endpoints are `GET /api/health`, `GET /api/products?q=&category=&page=&limit=`, and `GET /api/products/:id`.
+## Built with
 
-## Host the storefront on GitHub Pages
+React and Vite power the storefront. The repository also includes an Express API and MongoDB integration for catalogue data. The live GitHub Pages site is static and does not connect to a production API or database.
 
-The `Deploy TechParts to GitHub Pages` workflow builds and deploys the static storefront when changes are pushed to `main`. In the repository’s **Settings → Pages**, set the build and deployment source to **GitHub Actions**. The storefront can use demo catalogue data on Pages; the Express API and MongoDB database need a separate server deployment for live data and orders.
+---
 
-## Current scope
-
-The demo includes category browsing, search, price sorting, a client-side shopping bag, light and dark themes, and a guided PC build view. Account flows, inventory editing, order placement, compatibility rules backed by verified hardware data, tax and shipping calculation, and payment processing need their respective services and business data before they can be enabled safely.
+Made in India · TechParts
