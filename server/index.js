@@ -47,6 +47,7 @@ const productSchema = new mongoose.Schema({
   price: { type: Number, required: true, min: 0 },
   old: { type: Number, min: 0 },
   stock: { type: Number, min: 0, default: 0 },
+  lowStockThreshold: { type: Number, min: 0, max: 1000000, default: 5 },
   rating: { type: String, default: '0' },
   reviews: { type: Number, default: 0 },
   badge: { type: String, default: '' },
@@ -100,6 +101,7 @@ function parseProductInput(body) {
   const regularPrice = Number(body?.regularPrice);
   const discountPercent = Number(body?.discountPercent || 0);
   const stock = Number(body?.stock);
+  const lowStockThreshold = Number(body?.lowStockThreshold ?? 5);
   const image = String(body?.image || 'photo-1591488320449-011701bb6704').trim();
   const color = String(body?.color || 'blue');
   if (name.length < 2 || name.length > 120) return { error: 'Product name must be between 2 and 120 characters.' };
@@ -118,12 +120,13 @@ function parseProductInput(body) {
   if (!Number.isFinite(regularPrice) || regularPrice < 1 || regularPrice > 100000000) return { error: 'Enter a valid price greater than zero.' };
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 90) return { error: 'Discount must be between 0 and 90 percent.' };
   if (!Number.isInteger(stock) || stock < 0 || stock > 10000000) return { error: 'Stock must be a whole number between 0 and 10,000,000.' };
+  if (!Number.isInteger(lowStockThreshold) || lowStockThreshold < 0 || lowStockThreshold > 1000000) return { error: 'Low-stock threshold must be a whole number between 0 and 1,000,000.' };
   if (description.length > 4000) return { error: 'Description must be 4,000 characters or less.' };
   if (warranty.length > 120) return { error: 'Warranty details must be 120 characters or less.' };
   if (image.length > 120) return { error: 'Image identifier must be 120 characters or less.' };
   if (!productColors.has(color)) return { error: 'Choose a valid product color.' };
   const price = Math.round(regularPrice * (1 - discountPercent / 100));
-  return { value: { name, model, category, brand, sku, specifications: normalizedSpecifications, warranty, description, price, old: discountPercent ? regularPrice : undefined, stock, image, color } };
+  return { value: { name, model, category, brand, sku, specifications: normalizedSpecifications, warranty, description, price, old: discountPercent ? regularPrice : undefined, stock, lowStockThreshold, image, color } };
 }
 
 const addressSchema = new mongoose.Schema({
@@ -189,6 +192,16 @@ const savedBuildSchema = new mongoose.Schema({
   products: { type: [String], required: true, validate: values => values.length > 0 && values.length <= 8 },
 }, { timestamps: true, versionKey: false });
 const SavedBuild = mongoose.models.SavedBuild || mongoose.model('SavedBuild', savedBuildSchema);
+const inventoryMovementSchema = new mongoose.Schema({
+  productId: { type: String, required: true, index: true }, productName: { type: String, required: true }, sku: { type: String, default: '' },
+  change: { type: Number, required: true }, previousStock: { type: Number, required: true }, newStock: { type: Number, required: true },
+  reason: { type: String, required: true, maxlength: 180 }, actor: { type: String, default: '' },
+}, { timestamps: true, versionKey: false });
+inventoryMovementSchema.index({ createdAt: -1 });
+const InventoryMovement = mongoose.models.InventoryMovement || mongoose.model('InventoryMovement', inventoryMovementSchema);
+async function writeInventoryMovement(product,{change,previousStock,newStock,reason,actor=''}) {
+  return InventoryMovement.create({productId:String(product.id||product._id),productName:product.name,sku:product.sku||'',change,previousStock,newStock,reason,actor});
+}
 
 function hashToken(token) { return createHash('sha256').update(token).digest('hex'); }
 async function hashPassword(password) {
@@ -472,7 +485,7 @@ app.post('/api/orders', requireAuth, requirePasswordChangeComplete, async (req, 
         for (const prior of reserved) await Product.updateOne({ _id: prior._id }, { $inc: { stock: prior.quantity } });
         return res.status(409).json({ error: `${product.name} does not have enough stock for this quantity.` });
       }
-      reserved.push({ _id: product._id, quantity });
+      reserved.push({ _id: product._id, quantity, product:reservedProduct, previousStock:Number(product.stock)||0, newStock:Number(reservedProduct.stock)||0 });
       orderItems.push({ productId: String(product.id || product._id), name: product.name, model: product.model, category: product.category, image: product.image, price: product.price, quantity });
     }
 
@@ -482,6 +495,7 @@ app.post('/api/orders', requireAuth, requirePasswordChangeComplete, async (req, 
       items: orderItems, total: orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0),
       delivery: delivery.value, paymentMethod: req.body.paymentMethod, status: 'Placed', paymentStatus: 'pending', stockReserved: true,
     });
+    await Promise.all(reserved.map(item=>writeInventoryMovement(item.product,{change:-item.quantity,previousStock:item.previousStock,newStock:item.newStock,reason:`Stock reserved for ${order.number}`,actor:req.account.email}).catch(error=>console.error('Could not record stock reservation:',error.message))));
     res.status(201).json({ order: publicOrder(order) });
   } catch (error) {
     for (const prior of reserved) await Product.updateOne({ _id: prior._id }, { $inc: { stock: prior.quantity } }).catch(() => {});
@@ -523,7 +537,7 @@ app.patch('/api/admin/orders/:id', requireAuth, requirePasswordChangeComplete, r
       if (!cancelled) return res.status(409).json({ error: 'This order has already changed. Refresh and try again.' });
       for (const item of cancelled.items) {
         const product = await findProductById(item.productId);
-        if (product) await Product.updateOne({ _id: product._id }, { $inc: { stock: item.quantity } });
+        if (product) {const previousStock=Number(product.stock)||0;const updated=await Product.findOneAndUpdate({_id:product._id},{$inc:{stock:item.quantity}},{new:true});if(updated)await writeInventoryMovement(updated,{change:item.quantity,previousStock,newStock:Number(updated.stock)||0,reason:`Stock released after ${cancelled.number} cancellation`,actor:req.account.email});}
       }
       return res.json({ order: publicOrder(cancelled) });
     }
@@ -565,16 +579,18 @@ app.get('/api/admin/summary', requireAuth, requirePasswordChangeComplete, requir
     const [customers, blockedCustomers, inventory, orders] = await Promise.all([
       Account.countDocuments({ role: 'customer', status: 'active' }),
       Account.countDocuments({ role: 'customer', status: 'blocked' }),
-      Product.find({}, { price: 1, stock: 1 }).lean(),
-      Order.find({}, { status: 1, total: 1, paymentStatus: 1 }).lean(),
+      Product.find({}, { price: 1, stock: 1, lowStockThreshold: 1 }).lean(),
+      Order.find({}, { status: 1, total: 1, paymentStatus: 1, items: 1, stockReserved: 1 }).lean(),
     ]);
+    const reservedByProduct=new Map();for(const order of orders)if(order.stockReserved)for(const item of order.items||[])reservedByProduct.set(item.productId,(reservedByProduct.get(item.productId)||0)+Number(item.quantity||0));
     const stockCounts = inventory.reduce((summary, product) => {
       const stock = Math.max(0, Number(product.stock) || 0);
-      summary.inventoryValue += (Number(product.price) || 0) * stock;
+      const reserved=reservedByProduct.get(String(product.id||product._id))||0;
+      summary.inventoryValue += (Number(product.price) || 0) * (stock+reserved);
       if (stock === 0) summary.outOfStock += 1;
       else {
         summary.inStock += 1;
-        if (stock <= 5) summary.lowStock += 1;
+        if (stock <= Number(product.lowStockThreshold ?? 5)) summary.lowStock += 1;
       }
       return summary;
     }, { inStock: 0, lowStock: 0, outOfStock: 0, inventoryValue: 0 });
@@ -681,11 +697,34 @@ app.delete('/api/admin/brands/:id',requireAuth,requirePasswordChangeComplete,req
     await brand.deleteOne(); productBrands.delete(brand.name); res.json({ok:true,id:String(brand._id)});
   } catch(error){next(error);}
 });
+app.get('/api/admin/inventory',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(_req,res,next)=>{
+  try {
+    const [products,movements,openOrders]=await Promise.all([Product.find({}).sort({category:1,sku:1,name:1}).lean(),InventoryMovement.find({}).sort({createdAt:-1}).limit(150).lean(),Order.find({stockReserved:true},{items:1}).lean()]);
+    const reserved=new Map();for(const order of openOrders)for(const item of order.items)reserved.set(item.productId,(reserved.get(item.productId)||0)+Number(item.quantity||0));
+    res.json({items:products.map(product=>({...productJson(product),reservedStock:reserved.get(String(product.id||product._id))||0})),movements:movements.map(movement=>({...movement,id:String(movement._id)}))});
+  } catch(error){next(error);}
+});
+app.patch('/api/admin/products/:id/stock',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const delta=Number(req.body?.delta);const reason=String(req.body?.reason||'').trim();
+    if(!Number.isInteger(delta)||delta===0||Math.abs(delta)>10000000)return res.status(400).json({error:'Enter a non-zero whole-number stock adjustment.'});
+    if(reason.length<4||reason.length>180)return res.status(400).json({error:'Add a reason between 4 and 180 characters.'});
+    const product=await findProductById(req.params.id);if(!product)return res.status(404).json({error:'Product not found.'});
+    const previousStock=Math.max(0,Number(product.stock)||0);const newStock=previousStock+delta;
+    if(newStock<0||newStock>10000000)return res.status(409).json({error:'Adjustment would put stock outside the allowed range.'});
+    const updated=await Product.findOneAndUpdate({_id:product._id,stock:previousStock},{$set:{stock:newStock}},{new:true});
+    if(!updated)return res.status(409).json({error:'Stock changed since you opened this adjustment. Refresh and try again.'});
+    try {await writeInventoryMovement(updated,{change:delta,previousStock,newStock,reason,actor:req.account.email});}
+    catch(error){await Product.findOneAndUpdate({_id:updated._id,stock:newStock},{$set:{stock:previousStock}});throw error;}
+    res.json({product:productJson(updated)});
+  } catch(error){next(error);}
+});
 app.post('/api/admin/products', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (req, res, next) => {
   try {
     const parsed = parseProductInput(req.body);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
     const product = await Product.create({ id: randomUUID(), ...parsed.value });
+    if(product.stock>0)await writeInventoryMovement(product,{change:product.stock,previousStock:0,newStock:product.stock,reason:'Opening inventory',actor:req.account.email});
     res.status(201).json({ product: productJson(product) });
   } catch (error) { next(error); }
 });
@@ -695,8 +734,10 @@ app.put('/api/admin/products/:id', requireAuth, requirePasswordChangeComplete, r
     if (parsed.error) return res.status(400).json({ error: parsed.error });
     const product = await findProductById(req.params.id);
     if (!product) return res.status(404).json({ error: 'Product not found.' });
+    const previousStock=Math.max(0,Number(product.stock)||0);
     Object.assign(product, parsed.value);
     await product.save();
+    if(previousStock!==product.stock)await writeInventoryMovement(product,{change:product.stock-previousStock,previousStock,newStock:product.stock,reason:'Stock changed in product editor',actor:req.account.email});
     res.json({ product: productJson(product) });
   } catch (error) { next(error); }
 });
@@ -823,7 +864,7 @@ async function start() {
   if (sameSite === 'none' && !secureCookie) throw new Error('SameSite=None cookies require COOKIE_SECURE=true.');
   if (process.env.MONGODB_URI) {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init(), SavedBuild.init()]);
+    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init(), SavedBuild.init(), InventoryMovement.init()]);
     await seedTaxonomy();
     await seedCatalogue();
     await seedAdminAccount();

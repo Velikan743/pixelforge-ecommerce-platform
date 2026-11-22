@@ -19,7 +19,7 @@ The website opens with **Sign in** and **Create account** before the storefront.
 
 ## Admin workspace
 
-Admin accounts open the admin workspace after sign-in. The overview shows catalogue size, inventory levels and value, customers, orders, and manually recorded payments. Admins can manage products and stock, set brands, SKUs and technical specifications, create/edit/disable categories and brands, review orders and update fulfilment/payment states, and search, block, or reactivate customer accounts. The storefront supports category, brand, price and in-stock filters plus price, newest, popularity, rating and discount sorting. Admin API routes require an authenticated admin session.
+Admin accounts open the admin workspace after sign-in. The overview shows catalogue size, inventory levels and value, customers, orders, and manually recorded payments. Admins can manage products and stock, set per-product low-stock thresholds, record reasoned stock adjustments, review reserved units and the stock movement log, set brands/SKUs/specifications, create/edit/disable categories and brands, review orders and update fulfilment/payment states, and search, block, or reactivate customer accounts. The storefront supports category, brand, price and in-stock filters plus price, newest, popularity, rating and discount sorting. Admin API routes require an authenticated admin session.
 
 The initial admin account is provisioned by the API from `ADMIN_EMAIL` and `ADMIN_PASSWORD` environment variables. The local development defaults are `admin1@gmail.com` and `admin111`; the first sign-in requires setting a new password. Production hosting must set a strong `ADMIN_PASSWORD` secret and `MONGODB_URI`. Do not use the local starter password in a deployed environment.
 
