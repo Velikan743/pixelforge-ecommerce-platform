@@ -11,7 +11,8 @@ The website opens with **Sign in** and **Create account** before the storefront.
 ## Explore the website
 
 - Browse graphics cards, processors, motherboards, memory, storage, power supplies, cases, cooling, monitors, peripherals, and accessories.
-- Search and filter the catalogue, inspect recorded product specifications, and compare up to four products of the same category with differences highlighted.
+- Search with catalogue suggestions, combine store and category-specific filters, switch between grid/list layouts, and page through results at your chosen page size.
+- Inspect recorded product specifications and compare up to four products in the same category with differences highlighted.
 - Save products to a wishlist and add items to the shopping bag.
 - Manage your profile and saved delivery addresses, then view submitted orders and their status.
 - Build a PC from catalogue parts, see its total and specification-based compatibility warnings, then save it to your account or share a link.

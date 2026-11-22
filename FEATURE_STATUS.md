@@ -8,7 +8,7 @@ This checklist compares the project with `TechParts_Complete_Project_Idea.docx`.
 | --- | --- | --- |
 | Home page and theme | Partial | Responsive storefront, category cards, featured catalogue, theme toggle saved in this browser. No real campaigns, brand collections, newsletter service, or System theme. |
 | Customer accounts | Partial | Sign-up with name, email and mobile; sign-in, server sessions, role checks, sign-out, password change, and login throttling. Customers can edit their name/mobile and save up to 10 delivery addresses, select a saved address at checkout, and view their own orders. No email/mobile verification, password reset, notification preferences, or Google sign-in. |
-| Catalogue and search | Partial | Admin-managed categories and brands, searchable product text/specifications, category/brand/price/availability storefront filters, and featured/price/newest/popularity/rating/discount sorting. Search suggestions, pagination, list layout, and category-specific filter controls are missing. |
+| Catalogue and search | Partial | Admin-managed categories and brands, search suggestions across product/model/brand/SKU/category/spec text, combined category/brand/price/availability and data-driven category-specific specification filters, grid/list layout, 12/24/48 page sizes, pagination, and featured/price/newest/popularity/rating/discount sorting. |
 | Product information | Partial | Product details show description, price/discount, stock, brand, SKU, entered warranty and structured specifications, plus rating summary and one image. Most seeded items still lack confirmed technical/warranty data. Image galleries/zoom, delivery estimate, reviews, Q&A, share, and verified-purchase records are missing. |
 | Cart and wishlist | Partial | Browser-persisted per-account cart and wishlist, quantity changes, remove, and add-to-cart actions. Coupons, taxes, actual shipping, price-drop alerts, and server-saved cart/wishlist are missing. |
 | Product comparison | Partial | Compare up to four products in one category. Shows entered specs, warranty, brand, model, ratings, price and availability; highlights differences and lowest price; supports add/remove/replace and disables add-to-bag for known out-of-stock items. Comparison quality depends on complete, accurate catalogue data. |
@@ -22,7 +22,7 @@ This checklist compares the project with `TechParts_Complete_Project_Idea.docx`.
 - Payment gateway integration and reliable payment reconciliation.
 - GST-aware tax configuration, shipping rates, PIN-code serviceability, invoices, courier tracking, returns and refunds.
 - Notification preferences, reviews, product questions, and support tickets.
-- Complete category-specific filters and multiple product images.
+- Multiple product images.
 - Curated and routinely maintained hardware compatibility data, budget-based recommendations, and saved-build version history.
 - Coupons, promotional scheduling, price history/alerts, back-in-stock alerts, and personalized recommendations.
 - Sales charts, exportable reports, advanced customer segmentation, staff permissions, and admin audit history.
