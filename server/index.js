@@ -26,7 +26,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/account') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders') || req.path.startsWith('/api/categories') || req.path.startsWith('/api/brands'))) {
+  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/account') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders') || req.path.startsWith('/api/builds') || req.path.startsWith('/api/categories') || req.path.startsWith('/api/brands'))) {
     return res.status(403).json({ error: 'This site is not allowed to use the account service.' });
   }
   if (req.method === 'OPTIONS') return res.sendStatus(origin && allowedOrigins.has(origin) ? 204 : 403);
@@ -42,6 +42,7 @@ const productSchema = new mongoose.Schema({
   brand: { type: String, default: '', index: true },
   sku: { type: String, default: '', trim: true, maxlength: 64 },
   specifications: { type: mongoose.Schema.Types.Mixed, default: {} },
+  warranty: { type: String, default: '', trim: true, maxlength: 120 },
   description: { type: String, default: '', maxlength: 4000 },
   price: { type: Number, required: true, min: 0 },
   old: { type: Number, min: 0 },
@@ -90,6 +91,7 @@ function parseProductInput(body) {
   const brand = String(body?.brand || '').trim();
   const sku = String(body?.sku || '').trim().toUpperCase();
   const description = String(body?.description || '').trim();
+  const warranty = String(body?.warranty || '').trim();
   let specifications = body?.specifications || {};
   if (typeof specifications === 'string') {
     try { specifications = specifications.trim() ? JSON.parse(specifications) : {}; }
@@ -117,10 +119,11 @@ function parseProductInput(body) {
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 90) return { error: 'Discount must be between 0 and 90 percent.' };
   if (!Number.isInteger(stock) || stock < 0 || stock > 10000000) return { error: 'Stock must be a whole number between 0 and 10,000,000.' };
   if (description.length > 4000) return { error: 'Description must be 4,000 characters or less.' };
+  if (warranty.length > 120) return { error: 'Warranty details must be 120 characters or less.' };
   if (image.length > 120) return { error: 'Image identifier must be 120 characters or less.' };
   if (!productColors.has(color)) return { error: 'Choose a valid product color.' };
   const price = Math.round(regularPrice * (1 - discountPercent / 100));
-  return { value: { name, model, category, brand, sku, specifications: normalizedSpecifications, description, price, old: discountPercent ? regularPrice : undefined, stock, image, color } };
+  return { value: { name, model, category, brand, sku, specifications: normalizedSpecifications, warranty, description, price, old: discountPercent ? regularPrice : undefined, stock, image, color } };
 }
 
 const addressSchema = new mongoose.Schema({
@@ -180,6 +183,12 @@ const orderSchema = new mongoose.Schema({
   stockReserved: { type: Boolean, default: true },
 }, { timestamps: true, versionKey: false });
 const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
+const savedBuildSchema = new mongoose.Schema({
+  customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', required: true, index: true },
+  name: { type: String, required: true, trim: true, minlength: 2, maxlength: 60 },
+  products: { type: [String], required: true, validate: values => values.length > 0 && values.length <= 8 },
+}, { timestamps: true, versionKey: false });
+const SavedBuild = mongoose.models.SavedBuild || mongoose.model('SavedBuild', savedBuildSchema);
 
 function hashToken(token) { return createHash('sha256').update(token).digest('hex'); }
 async function hashPassword(password) {
@@ -391,6 +400,29 @@ function validateDelivery(body) {
   return { value: delivery };
 }
 
+app.get('/api/builds', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
+  try {
+    const builds=await SavedBuild.find({customer:req.account._id}).sort({updatedAt:-1}).lean();
+    res.json({items:builds.map(build=>({...build,id:String(build._id),products:build.products||[]}))});
+  } catch(error){next(error);}
+});
+app.post('/api/builds', requireAuth, requirePasswordChangeComplete, async (req,res,next)=>{
+  try {
+    if(req.account.role!=='customer')return res.status(403).json({error:'Customer accounts are required to save PC builds.'});
+    const name=String(req.body?.name||'').trim();
+    const ids=Array.isArray(req.body?.products)?req.body.products.map(id=>String(id).trim()):[];
+    if(name.length<2||name.length>60)return res.status(400).json({error:'Build name must contain 2 to 60 characters.'});
+    if(!ids.length||ids.length>8||new Set(ids).size!==ids.length)return res.status(400).json({error:'Select one unique product for each of up to eight build slots.'});
+    const categories=new Set();
+    for(const id of ids){const product=await findProductById(id);if(!product)return res.status(400).json({error:'A selected product is no longer in the catalogue.'});if(categories.has(product.category))return res.status(400).json({error:'A build can only contain one product per component category.'});categories.add(product.category);}
+    const build=await SavedBuild.create({customer:req.account._id,name,products:ids});
+    res.status(201).json({build:{id:String(build._id),name:build.name,products:build.products,createdAt:build.createdAt,updatedAt:build.updatedAt}});
+  } catch(error){next(error);}
+});
+app.delete('/api/builds/:id',requireAuth,requirePasswordChangeComplete,async(req,res,next)=>{
+  try {const build=await SavedBuild.findOneAndDelete({_id:req.params.id,customer:req.account._id});if(!build)return res.status(404).json({error:'Saved build not found.'});res.json({ok:true,id:String(build._id)});}
+  catch(error){next(error);}
+});
 app.get('/api/orders', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
   try {
     const orders = await Order.find({ customer: req.account._id }).sort({ createdAt: -1 }).lean();
@@ -791,7 +823,7 @@ async function start() {
   if (sameSite === 'none' && !secureCookie) throw new Error('SameSite=None cookies require COOKIE_SECURE=true.');
   if (process.env.MONGODB_URI) {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init()]);
+    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init(), SavedBuild.init()]);
     await seedTaxonomy();
     await seedCatalogue();
     await seedAdminAccount();

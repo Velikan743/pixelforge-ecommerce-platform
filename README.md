@@ -11,10 +11,10 @@ The website opens with **Sign in** and **Create account** before the storefront.
 ## Explore the website
 
 - Browse graphics cards, processors, motherboards, memory, storage, power supplies, cases, cooling, monitors, peripherals, and accessories.
-- Search and sort the catalogue, then open product details or compare products.
+- Search and filter the catalogue, inspect recorded product specifications, and compare up to four products of the same category with differences highlighted.
 - Save products to a wishlist and add items to the shopping bag.
 - Manage your profile and saved delivery addresses, then view submitted orders and their status.
-- Try the guided PC builder, switch between light and dark themes, and explore the checkout preview.
+- Build a PC from catalogue parts, see its total and specification-based compatibility warnings, then save it to your account or share a link.
 
 ## Admin workspace
 
@@ -24,7 +24,7 @@ The initial admin account is provisioned by the API from `ADMIN_EMAIL` and `ADMI
 
 ## Demo information
 
-This is a portfolio project, not a production-ready store. Catalogue prices, availability, ratings, delivery details, and compatibility need confirmation before any real sale. The starter catalogue is seeded with zero stock so products are unavailable until an admin sets inventory. The bag and wishlist are saved in this browser. Checkout creates a persisted order and reserves inventory, but does not collect payment, calculate tax or shipping, arrange delivery, or issue an invoice. Sales and revenue reporting is limited to manually recorded payment statuses. Customer registration, sign-in, and admin access require the API and MongoDB to be hosted and configured.
+This is a portfolio project, not a production-ready store. Catalogue prices, availability, ratings, delivery details, product specifications, and compatibility need confirmation before any real sale. The starter catalogue is seeded with zero stock so products are unavailable until an admin sets inventory. The bag and wishlist are saved in this browser; named PC builds are stored with the account when the API is available. Checkout creates a persisted order and reserves inventory, but does not collect payment, calculate tax or shipping, arrange delivery, or issue an invoice. Sales and revenue reporting is limited to manually recorded payment statuses. Customer registration, sign-in, saved builds, and admin access require the API and MongoDB to be hosted and configured. Compatibility checks explicitly mark missing specification data for review and do not guarantee a working build.
 
 See [FEATURE_STATUS.md](./FEATURE_STATUS.md) for the feature-by-feature comparison with the complete project idea and the remaining implementation plan. Orders are stored by the API and reserve stock, but payment, tax, shipping, and fulfilment integrations are not connected; treat this as a development project, not a live store.
 
