@@ -13,11 +13,12 @@ The website opens with **Sign in** and **Create account** before the storefront.
 - Browse graphics cards, processors, motherboards, memory, storage, power supplies, cases, cooling, monitors, peripherals, and accessories.
 - Search and sort the catalogue, then open product details or compare products.
 - Save products to a wishlist and add items to the shopping bag.
+- Manage your profile and saved delivery addresses, then view submitted orders and their status.
 - Try the guided PC builder, switch between light and dark themes, and explore the checkout preview.
 
 ## Admin workspace
 
-Admin accounts open the admin workspace after sign-in. The overview shows catalogue size, in-stock products, low stock, out-of-stock items, estimated inventory value, and customer account count. Product management lets an admin add, edit, search, and delete catalogue items, including descriptions, prices, discounts, images, and stock. Admin API routes require an authenticated admin session.
+Admin accounts open the admin workspace after sign-in. The overview shows catalogue size, inventory levels and value, customers, orders, and manually recorded payments. Admins can manage products and stock, review orders and update fulfilment/payment states, and search, block, or reactivate customer accounts. Admin API routes require an authenticated admin session.
 
 The initial admin account is provisioned by the API from `ADMIN_EMAIL` and `ADMIN_PASSWORD` environment variables. The local development defaults are `admin1@gmail.com` and `admin111`; the first sign-in requires setting a new password. Production hosting must set a strong `ADMIN_PASSWORD` secret and `MONGODB_URI`. Do not use the local starter password in a deployed environment.
 
