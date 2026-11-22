@@ -214,6 +214,9 @@ const couponSchema = new mongoose.Schema({
   categories: { type: [String], default: [] }, active: { type: Boolean, default: true },
 }, { timestamps: true, versionKey: false });
 const Coupon = mongoose.models.Coupon || mongoose.model('Coupon', couponSchema);
+const reviewSchema = new mongoose.Schema({ productId:{type:String,required:true,index:true},productName:{type:String,required:true},customer:{type:mongoose.Schema.Types.ObjectId,ref:'Account',required:true,index:true},customerName:{type:String,required:true},customerEmail:{type:String,required:true},rating:{type:Number,required:true,min:1,max:5},title:{type:String,required:true,trim:true,maxlength:100},body:{type:String,required:true,trim:true,maxlength:1500},status:{type:String,enum:['pending','approved','rejected'],default:'pending'} },{timestamps:true,versionKey:false});
+reviewSchema.index({productId:1,customer:1},{unique:true});
+const Review=mongoose.models.Review||mongoose.model('Review',reviewSchema);
 async function writeInventoryMovement(product,{change,previousStock,newStock,reason,actor=''}) {
   return InventoryMovement.create({productId:String(product.id||product._id),productName:product.name,sku:product.sku||'',change,previousStock,newStock,reason,actor});
 }
@@ -898,6 +901,14 @@ app.get('/api/products/:id', requireAuth, requirePasswordChangeComplete, async (
     res.json(productJson(item));
   } catch (error) { next(error); }
 });
+app.get('/api/products/:id/reviews',requireAuth,requirePasswordChangeComplete,async(req,res,next)=>{
+  try{const product=await findProductById(req.params.id);if(!product)return res.status(404).json({error:'Product not found.'});const [items,mine,deliveredOrder]=await Promise.all([Review.find({productId:String(product.id||product._id),status:'approved'}).sort({createdAt:-1}).limit(50).lean(),Review.findOne({productId:String(product.id||product._id),customer:req.account._id}).lean(),req.account.role==='customer'?Order.exists({customer:req.account._id,status:'Delivered','items.productId':String(product.id||product._id)}):null]);res.json({items:items.map(item=>({id:String(item._id),customerName:item.customerName,rating:item.rating,title:item.title,body:item.body,createdAt:item.createdAt})),mine:mine?{id:String(mine._id),status:mine.status,rating:mine.rating,title:mine.title,body:mine.body}:null,canReview:Boolean(deliveredOrder&&!mine)});}catch(error){next(error);}
+});
+app.post('/api/products/:id/reviews',requireAuth,requirePasswordChangeComplete,requireRole('customer'),async(req,res,next)=>{
+  try{const product=await findProductById(req.params.id);if(!product)return res.status(404).json({error:'Product not found.'});const productId=String(product.id||product._id);if(!await Order.exists({customer:req.account._id,status:'Delivered','items.productId':productId}))return res.status(403).json({error:'A delivered order containing this product is required to review it.'});const rating=Number(req.body?.rating);const title=String(req.body?.title||'').trim();const body=String(req.body?.body||'').trim();if(!Number.isInteger(rating)||rating<1||rating>5)return res.status(400).json({error:'Choose a rating from 1 to 5.'});if(title.length<3||title.length>100||body.length<10||body.length>1500)return res.status(400).json({error:'Add a title (3–100 characters) and review (10–1,500 characters).'});const review=await Review.create({productId,productName:product.name,customer:req.account._id,customerName:req.account.name,customerEmail:req.account.email,rating,title,body,status:'pending'});res.status(201).json({review:{id:String(review._id),status:review.status}});}catch(error){if(error?.code===11000)return res.status(409).json({error:'You have already submitted a review for this product.'});next(error);}
+});
+app.get('/api/admin/reviews',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(_req,res,next)=>{try{const items=await Review.find({}).sort({createdAt:-1}).limit(500).lean();res.json({items:items.map(item=>({...item,id:String(item._id),customerId:String(item.customer)}))});}catch(error){next(error);}});
+app.patch('/api/admin/reviews/:id',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{try{const status=String(req.body?.status||'');if(!['approved','rejected'].includes(status))return res.status(400).json({error:'Choose approve or reject.'});const review=await Review.findById(req.params.id);if(!review)return res.status(404).json({error:'Review not found.'});review.status=status;await review.save();const [summary,product]=await Promise.all([Review.aggregate([{$match:{productId:review.productId,status:'approved'}},{$group:{_id:null,count:{$sum:1},rating:{$avg:'$rating'}}}]),findProductById(review.productId)]);if(product){product.reviews=summary[0]?.count||0;product.rating=summary[0]?summary[0].rating.toFixed(1):'0';await product.save();}res.json({review:{id:String(review._id),status:review.status}});}catch(error){next(error);}});
 
 if (isProduction) {
   const frontendDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../dist');
@@ -972,7 +983,7 @@ async function start() {
   if (sameSite === 'none' && !secureCookie) throw new Error('SameSite=None cookies require COOKIE_SECURE=true.');
   if (process.env.MONGODB_URI) {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init(), SavedBuild.init(), InventoryMovement.init(), Coupon.init()]);
+    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init(), SavedBuild.init(), InventoryMovement.init(), Coupon.init(), Review.init()]);
     await seedTaxonomy();
     await seedCatalogue();
     await seedAdminAccount();
