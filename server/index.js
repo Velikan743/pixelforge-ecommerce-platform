@@ -26,7 +26,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders'))) {
+  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/account') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders'))) {
     return res.status(403).json({ error: 'This site is not allowed to use the account service.' });
   }
   if (req.method === 'OPTIONS') return res.sendStatus(origin && allowedOrigins.has(origin) ? 204 : 403);
@@ -87,11 +87,24 @@ function parseProductInput(body) {
   return { value: { name, model, category, description, price, old: discountPercent ? regularPrice : undefined, stock, image, color } };
 }
 
+const addressSchema = new mongoose.Schema({
+  label: { type: String, required: true, trim: true, maxlength: 40 },
+  recipient: { type: String, required: true, trim: true, maxlength: 100 },
+  phone: { type: String, required: true, trim: true, maxlength: 30 },
+  address: { type: String, required: true, trim: true, maxlength: 240 },
+  city: { type: String, required: true, trim: true, maxlength: 100 },
+  state: { type: String, required: true, trim: true, maxlength: 100 },
+  pincode: { type: String, required: true, trim: true, maxlength: 6 },
+  isDefault: { type: Boolean, default: false },
+}, { timestamps: true });
 const accountSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 80 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true, maxlength: 254 },
+  mobile: { type: String, default: '', trim: true, maxlength: 30 },
   passwordHash: { type: String, required: true, select: false },
   role: { type: String, enum: ['customer', 'admin'], default: 'customer', required: true },
+  status: { type: String, enum: ['active', 'blocked'], default: 'active', index: true },
+  addresses: { type: [addressSchema], default: [] },
   mustChangePassword: { type: Boolean, default: false },
 }, { timestamps: true, versionKey: false });
 const Account = mongoose.models.Account || mongoose.model('Account', accountSchema);
@@ -160,7 +173,7 @@ function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=${sameSiteValue}; Max-Age=0${secureCookie ? '; Secure' : ''}`);
 }
 function publicAccount(account) {
-  return { id: String(account._id), name: account.name, email: account.email, role: account.role, mustChangePassword: Boolean(account.mustChangePassword) };
+  return { id: String(account._id), name: account.name, email: account.email, mobile: account.mobile || '', role: account.role, status: account.status || 'active', addresses: (account.addresses || []).map(address => ({ id: String(address._id), label: address.label, recipient: address.recipient, phone: address.phone, address: address.address, city: address.city, state: address.state, pincode: address.pincode, isDefault: Boolean(address.isDefault) })), mustChangePassword: Boolean(account.mustChangePassword) };
 }
 
 async function requireAuth(req, res, next) {
@@ -168,9 +181,9 @@ async function requireAuth(req, res, next) {
     const token = readCookie(req, SESSION_COOKIE);
     if (!token || token.length > 256) return res.status(401).json({ error: 'Please sign in to continue.' });
     const session = await Session.findOne({ tokenHash: hashToken(token), expiresAt: { $gt: new Date() } }).populate('account');
-    if (!session?.account) {
+    if (!session?.account || session.account.status === 'blocked') {
       clearSessionCookie(res);
-      return res.status(401).json({ error: 'Your session expired. Please sign in again.' });
+      return res.status(session?.account?.status === 'blocked' ? 403 : 401).json({ error: session?.account?.status === 'blocked' ? 'This account is currently blocked. Contact store support.' : 'Your session expired. Please sign in again.' });
     }
     req.account = session.account;
     req.sessionId = session._id;
@@ -219,11 +232,13 @@ app.post('/api/auth/signup', limitAuthAttempts, async (req, res, next) => {
     if (mongoose.connection.readyState !== 1) return res.status(503).json({ error: 'Account service is not configured. Connect the database and try again.' });
     const name = String(req.body?.name || '').trim();
     const email = String(req.body?.email || '').trim().toLowerCase();
+    const mobile = String(req.body?.mobile || '').trim();
     const password = String(req.body?.password || '');
     if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Enter a name between 2 and 80 characters.' });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: 'Enter a valid email address.' });
+    if (!/^[0-9+() -]{8,30}$/.test(mobile)) return res.status(400).json({ error: 'Enter a valid mobile number.' });
     if (password.length < 8 || password.length > 128) return res.status(400).json({ error: 'Password must be between 8 and 128 characters.' });
-    const account = await Account.create({ name, email, passwordHash: await hashPassword(password), role: 'customer' });
+    const account = await Account.create({ name, email, mobile, passwordHash: await hashPassword(password), role: 'customer' });
     await createSession(account, res);
     res.status(201).json({ account: publicAccount(account) });
   } catch (error) {
@@ -239,12 +254,70 @@ app.post('/api/auth/login', limitAuthAttempts, async (req, res, next) => {
     const password = String(req.body?.password || '');
     const account = await Account.findOne({ email }).select('+passwordHash');
     if (!account || !(await verifyPassword(password, account.passwordHash))) return res.status(401).json({ error: 'Email or password is incorrect.' });
+    if (account.status === 'blocked') return res.status(403).json({ error: 'This account is currently blocked. Contact store support.' });
     await createSession(account, res);
     res.json({ account: publicAccount(account) });
   } catch (error) { next(error); }
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => res.json({ account: publicAccount(req.account) }));
+app.get('/api/account', requireAuth, requirePasswordChangeComplete, (req, res) => res.json({ account: publicAccount(req.account) }));
+app.put('/api/account/profile', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const mobile = String(req.body?.mobile || '').trim();
+    if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Name must be between 2 and 80 characters.' });
+    if (!/^[0-9+() -]{8,30}$/.test(mobile)) return res.status(400).json({ error: 'Enter a valid mobile number.' });
+    const account = await Account.findByIdAndUpdate(req.account._id, { $set: { name, mobile } }, { new: true, runValidators: true });
+    res.json({ account: publicAccount(account) });
+  } catch (error) { next(error); }
+});
+function parseAddress(body) {
+  const fields = ['label', 'recipient', 'phone', 'address', 'city', 'state', 'pincode'];
+  const value = Object.fromEntries(fields.map(field => [field, String(body?.[field] || '').trim()]));
+  const limits = { label: 40, recipient: 100, phone: 30, address: 240, city: 100, state: 100, pincode: 6 };
+  if (fields.some(field => !value[field] || value[field].length > limits[field])) return { error: 'Complete each address field using the allowed length.' };
+  if (!/^[0-9+() -]{8,30}$/.test(value.phone)) return { error: 'Enter a valid phone number.' };
+  if (!/^[0-9]{6}$/.test(value.pincode)) return { error: 'Enter a valid six-digit PIN code.' };
+  return { value: { ...value, isDefault: Boolean(body?.isDefault) } };
+}
+app.post('/api/account/addresses', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
+  try {
+    const parsed = parseAddress(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const account = await Account.findById(req.account._id);
+    if (account.addresses.length >= 10) return res.status(400).json({ error: 'You can save up to 10 addresses.' });
+    if (!account.addresses.length || parsed.value.isDefault) account.addresses.forEach(address => { address.isDefault = false; });
+    account.addresses.push({ ...parsed.value, isDefault: !account.addresses.length || parsed.value.isDefault });
+    await account.save();
+    res.status(201).json({ account: publicAccount(account) });
+  } catch (error) { next(error); }
+});
+app.put('/api/account/addresses/:addressId', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
+  try {
+    const parsed = parseAddress(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const account = await Account.findById(req.account._id);
+    const address = account.addresses.id(req.params.addressId);
+    if (!address) return res.status(404).json({ error: 'Address not found.' });
+    if (parsed.value.isDefault) account.addresses.forEach(item => { item.isDefault = false; });
+    Object.assign(address, parsed.value);
+    await account.save();
+    res.json({ account: publicAccount(account) });
+  } catch (error) { next(error); }
+});
+app.delete('/api/account/addresses/:addressId', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
+  try {
+    const account = await Account.findById(req.account._id);
+    const address = account.addresses.id(req.params.addressId);
+    if (!address) return res.status(404).json({ error: 'Address not found.' });
+    const wasDefault = address.isDefault;
+    address.deleteOne();
+    if (wasDefault && account.addresses.length) account.addresses[0].isDefault = true;
+    await account.save();
+    res.json({ account: publicAccount(account) });
+  } catch (error) { next(error); }
+});
 app.post('/api/auth/password', limitAuthAttempts, requireAuth, async (req, res, next) => {
   try {
     const currentPassword = String(req.body?.currentPassword || '');
@@ -392,11 +465,38 @@ app.patch('/api/admin/orders/:id', requireAuth, requirePasswordChangeComplete, r
     res.json({ order: publicOrder(order) });
   } catch (error) { next(error); }
 });
+app.get('/api/admin/customers', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (req, res, next) => {
+  try {
+    const search = String(req.query.q || '').trim().slice(0, 80);
+    const filter = { role: 'customer' };
+    if (search) filter.$or = [
+      { name: { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+      { email: { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+      { mobile: { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+    ];
+    const customers = await Account.find(filter, { name: 1, email: 1, mobile: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(200).lean();
+    const ids = customers.map(customer => customer._id);
+    const orderCounts = await Order.aggregate([{ $match: { customer: { $in: ids } } }, { $group: { _id: '$customer', count: { $sum: 1 } } }]);
+    const countByCustomer = new Map(orderCounts.map(item => [String(item._id), item.count]));
+    res.json({ items: customers.map(customer => ({ id: String(customer._id), name: customer.name, email: customer.email, mobile: customer.mobile || '', status: customer.status || 'active', createdAt: customer.createdAt, orderCount: countByCustomer.get(String(customer._id)) || 0 })) });
+  } catch (error) { next(error); }
+});
+app.patch('/api/admin/customers/:id', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (req, res, next) => {
+  try {
+    const status = String(req.body?.status || '');
+    if (!['active', 'blocked'].includes(status)) return res.status(400).json({ error: 'Choose active or blocked for the customer account.' });
+    const customer = await Account.findOneAndUpdate({ _id: req.params.id, role: 'customer' }, { $set: { status } }, { new: true, runValidators: true });
+    if (!customer) return res.status(404).json({ error: 'Customer account not found.' });
+    if (status === 'blocked') await Session.deleteMany({ account: customer._id });
+    res.json({ customer: { id: String(customer._id), name: customer.name, email: customer.email, status: customer.status } });
+  } catch (error) { next(error); }
+});
 
 app.get('/api/admin/summary', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (_req, res, next) => {
   try {
-    const [customers, inventory, orders] = await Promise.all([
-      Account.countDocuments({ role: 'customer' }),
+    const [customers, blockedCustomers, inventory, orders] = await Promise.all([
+      Account.countDocuments({ role: 'customer', status: 'active' }),
+      Account.countDocuments({ role: 'customer', status: 'blocked' }),
       Product.find({}, { price: 1, stock: 1 }).lean(),
       Order.find({}, { status: 1, total: 1, paymentStatus: 1 }).lean(),
     ]);
@@ -410,7 +510,7 @@ app.get('/api/admin/summary', requireAuth, requirePasswordChangeComplete, requir
       }
       return summary;
     }, { inStock: 0, lowStock: 0, outOfStock: 0, inventoryValue: 0 });
-    res.json({ customers, products: inventory.length, orders: orders.length, pendingOrders: orders.filter(order => ['Placed', 'Processing'].includes(order.status)).length, paidRevenue: orders.filter(order => order.paymentStatus === 'paid').reduce((sum, order) => sum + order.total, 0), ...stockCounts });
+    res.json({ customers, blockedCustomers, products: inventory.length, orders: orders.length, pendingOrders: orders.filter(order => ['Placed', 'Processing'].includes(order.status)).length, paidRevenue: orders.filter(order => order.paymentStatus === 'paid').reduce((sum, order) => sum + order.total, 0), ...stockCounts });
   } catch (error) { next(error); }
 });
 

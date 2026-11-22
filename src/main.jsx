@@ -53,6 +53,7 @@ function App() {
   const [placedOrder, setPlacedOrder] = useState(null);
   const [ordersPage, setOrdersPage] = useState(false);
   const [adminPage, setAdminPage] = useState(false);
+  const [profilePage, setProfilePage] = useState(false);
   const [checkoutError, setCheckoutError] = useState('');
   const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState('');
@@ -77,7 +78,7 @@ function App() {
     const expireSession = () => {
       setAuth({ status: 'unauthenticated', account: null, message: 'Your session expired. Please sign in again.' });
       setStorageReady(false); setCart([]); setWishlist([]); setOrders([]);
-      setCheckout(false); setOrdersPage(false); setAdminPage(false);
+      setCheckout(false); setOrdersPage(false); setAdminPage(false); setProfilePage(false);
     };
     window.addEventListener('techparts:session-expired', expireSession);
     return () => window.removeEventListener('techparts:session-expired', expireSession);
@@ -136,7 +137,7 @@ function App() {
     try { await apiRequest('/api/auth/logout', { method: 'POST', body: '{}' }); } catch { /* Clear this browser view even if the server is unavailable. */ }
     setAuth({ status: 'unauthenticated', account: null, message: '' });
     setStorageReady(false); setCart([]); setWishlist([]); setOrders([]);
-    setCheckout(false); setOrdersPage(false); setAdminPage(false);
+    setCheckout(false); setOrdersPage(false); setAdminPage(false); setProfilePage(false);
   }
   async function beginCheckout() {
     if (!cart.length) return;
@@ -220,11 +221,11 @@ function App() {
     <div className="announcement"><span><Sparkles size={13}/> THE COMPONENTS YOU WANT, AT PRICES YOU’LL LOVE</span><a href="#products">See what’s new <ArrowRight size={13}/></a></div>
     <header className="header">
       <a className="brand" href="#home" aria-label="TechParts home"><span className="brand-mark"><Zap size={20} fill="currentColor"/></span><span>tech<span>parts</span><small>BUILD BETTER</small></span></a>
-      <nav className={mobileMenu ? 'nav open' : 'nav'}><a className="nav-active" href="#products" onClick={()=>{setAdminPage(false);setOrdersPage(false);setCheckout(false);setBuilder(false);setMobileMenu(false)}}>Shop</a><a href="#categories" onClick={()=>{setAdminPage(false);setMobileMenu(false)}}>Categories</a><a href="#builder" onClick={e=>{e.preventDefault();setBuilder(true);setAdminPage(false);setOrdersPage(false);setMobileMenu(false)}}>PC Builder <span className="new-pill">NEW</span></a><a href="#orders" onClick={e=>{e.preventDefault();setOrdersPage(true);setAdminPage(false);setBuilder(false);setCheckout(false);setMobileMenu(false)}}>Orders</a>{auth.account.role === 'admin' && <a href="#admin" onClick={e=>{e.preventDefault();setAdminPage(true);setBuilder(false);setOrdersPage(false);setCheckout(false);setMobileMenu(false)}}>Admin</a>}<button className="nav-signout" onClick={signOut}>Sign out</button></nav>
+      <nav className={mobileMenu ? 'nav open' : 'nav'}><a className="nav-active" href="#products" onClick={()=>{setAdminPage(false);setOrdersPage(false);setProfilePage(false);setCheckout(false);setBuilder(false);setMobileMenu(false)}}>Shop</a><a href="#categories" onClick={()=>{setAdminPage(false);setProfilePage(false);setMobileMenu(false)}}>Categories</a><a href="#builder" onClick={e=>{e.preventDefault();setBuilder(true);setAdminPage(false);setProfilePage(false);setOrdersPage(false);setMobileMenu(false)}}>PC Builder <span className="new-pill">NEW</span></a><a href="#orders" onClick={e=>{e.preventDefault();setOrdersPage(true);setProfilePage(false);setAdminPage(false);setBuilder(false);setCheckout(false);setMobileMenu(false)}}>Orders</a><a href="#profile" onClick={e=>{e.preventDefault();setProfilePage(true);setAdminPage(false);setBuilder(false);setOrdersPage(false);setCheckout(false);setMobileMenu(false)}}>My account</a>{auth.account.role === 'admin' && <a href="#admin" onClick={e=>{e.preventDefault();setAdminPage(true);setProfilePage(false);setBuilder(false);setOrdersPage(false);setCheckout(false);setMobileMenu(false)}}>Admin</a>}<button className="nav-signout" onClick={signOut}>Sign out</button></nav>
       <div className="header-actions"><label className="search-box"><Search size={17}/><input aria-label="Search products" placeholder="Search components..." value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌘ K</kbd></label><span className="account-chip" title={auth.account.email}><UserRound size={15}/><span>{auth.account.name}</span>{auth.account.role === 'admin' && <b>ADMIN</b>}</span><button className="signout-button" onClick={signOut}>Sign out</button><button className="icon-button theme-button" aria-label="Toggle theme" onClick={toggleTheme}>{dark?<Sun size={18}/>:<Moon size={18}/>}</button><button className="wishlist-header" onClick={()=>setShowWishlist(true)} aria-label={`Wishlist, ${wishlist.length} products`}><Heart size={18}/><span>Saved</span>{wishlist.length>0&&<b>{wishlist.length}</b>}</button><button className="bag-button" onClick={()=>setDrawer(true)} aria-label={`Shopping bag, ${cartCount} items`}><ShoppingBag size={19}/><span>Bag</span><b>{cartCount}</b></button><button className="icon-button menu-button" onClick={()=>setMobileMenu(!mobileMenu)} aria-label="Toggle navigation">{mobileMenu?<X size={20}/>:<Menu size={20}/>}</button></div>
     </header>
     <main>
-      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account} onShop={()=>setAdminPage(false)}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage items={cart} total={cartTotal} error={checkoutError} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
+      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account} onShop={()=>setAdminPage(false)}/> : profilePage ? <ProfilePage account={auth.account} onAccountUpdate={account=>setAuth(current=>({...current,account}))} onShop={()=>setProfilePage(false)}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage account={auth.account} items={cart} total={cartTotal} error={checkoutError} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
         <section className="hero" id="home">
           <div className="hero-copy"><div className="eyebrow"><span className="eyebrow-line"/>THE NEXT LEVEL STARTS HERE</div><h1>Your setup.<br/>Your <em>story.</em></h1><p>Thoughtful gear for the way you play, create, and work. Find your next favorite piece.</p><div className="hero-buttons"><a className="button-primary" href="#products">Explore components <ArrowRight size={16}/></a><button className="button-text" onClick={()=>setBuilder(true)}>Build your PC <ArrowUpRight size={15}/></button></div><div className="hero-proof"><div className="avatars"><span>R</span><span>A</span><span>K</span><span>+</span></div><div><strong>Loved by 12,000+ builders</strong><small>★★★★★ <span>4.9 / 5 average rating</span></small></div></div></div>
           <div className="hero-art"><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-glow"/><div className="hero-product"><img src={photo('photo-1587202372775-e229f172b9d7')} alt="High-performance graphics card"/><span className="floating-tag tag-top"><span className="tag-dot"/>NEW DROP <strong>RTX 50 SERIES</strong></span><span className="floating-tag tag-bottom"><span className="tag-icon"><Zap size={17}/></span><span>Built for more<small>Make every frame count</small></span><ArrowUpRight size={17}/></span></div><div className="hero-scribble">MAKE<br/>IT YOURS<span>↗</span></div><span className="hero-index">01 / 04</span></div>
@@ -262,7 +263,7 @@ function AuthGate({ onAuthenticated, initialMessage = '' }) {
     setMessage('');
     const form = new FormData(e.currentTarget);
     const payload = { email: form.get('email'), password: form.get('password') };
-    if (mode === 'signup') payload.name = form.get('name');
+    if (mode === 'signup') { payload.name = form.get('name'); payload.mobile = form.get('mobile'); }
     try {
       const response = await apiRequest(`/api/auth/${mode === 'signin' ? 'login' : 'signup'}`, { method: 'POST', body: JSON.stringify(payload) });
       const data = await response.json();
@@ -287,6 +288,7 @@ function AuthGate({ onAuthenticated, initialMessage = '' }) {
         <div className="auth-tabs" role="tablist" aria-label="Account options"><button type="button" role="tab" aria-selected={mode === 'signin'} className={mode === 'signin' ? 'active' : ''} onClick={() => { setMode('signin'); setMessage(''); }}>Sign in</button><button type="button" role="tab" aria-selected={mode === 'signup'} className={mode === 'signup' ? 'active' : ''} onClick={() => { setMode('signup'); setMessage(''); }}>Create account</button></div>
         <form className="auth-form" onSubmit={submit}>
           {mode === 'signup' && <label>Your name<span className="auth-input"><UserRound size={17}/><input name="name" autoComplete="name" required minLength="2" placeholder="Chinmay Santosh"/></span></label>}
+          {mode === 'signup' && <label>Mobile number<span className="auth-input"><UserRound size={17}/><input name="mobile" type="tel" autoComplete="tel" required pattern="[0-9+() -]{8,30}" placeholder="+91 98765 43210"/></span></label>}
           <label>Email address<span className="auth-input"><Mail size={17}/><input name="email" type="email" autoComplete="email" required placeholder="you@example.com"/></span></label>
           <label>Password<span className="auth-input"><LockKeyhole size={17}/><input name="password" type={showPassword ? 'text' : 'password'} autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} required minLength="8" placeholder="At least 8 characters"/><button type="button" className="password-toggle" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={17}/> : <Eye size={17}/>}</button></span></label>
           {mode === 'signup' && <label className="auth-check"><input type="checkbox" required/><span>I understand this project preview does not process payments.</span></label>}
@@ -299,10 +301,78 @@ function AuthGate({ onAuthenticated, initialMessage = '' }) {
   </main>;
 }
 
+function ProfilePage({account,onAccountUpdate,onShop}) {
+  const [name,setName]=useState(account.name || '');
+  const [mobile,setMobile]=useState(account.mobile || '');
+  const [addresses,setAddresses]=useState(account.addresses || []);
+  const [editing,setEditing]=useState(undefined);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState('');
+
+  useEffect(()=>{
+    const controller=new AbortController();
+    apiRequest('/api/account',{signal:controller.signal}).then(response=>response.ok?response.json():null).then(data=>{
+      if(!data?.account)return;
+      setName(data.account.name);setMobile(data.account.mobile || '');setAddresses(data.account.addresses || []);onAccountUpdate(data.account);
+    }).catch(requestError=>{if(requestError.name!=='AbortError')setError('Could not load your account details.');});
+    return()=>controller.abort();
+  },[]);
+
+  function applyAccount(account) {
+    setName(account.name);setMobile(account.mobile || '');setAddresses(account.addresses || []);onAccountUpdate(account);
+  }
+  async function saveProfile(event) {
+    event.preventDefault();setSaving(true);setError('');
+    try {
+      const response=await apiRequest('/api/account/profile',{method:'PUT',body:JSON.stringify({name,mobile})});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error || 'Could not save your profile.');
+      applyAccount(data.account);
+    } catch(saveError) { setError(saveError.message || 'Could not save your profile.'); }
+    finally { setSaving(false); }
+  }
+  async function saveAddress(event) {
+    event.preventDefault();setSaving(true);setError('');
+    const form=event.currentTarget;
+    const values=Object.fromEntries(new FormData(form).entries());
+    values.isDefault=new FormData(form).has('isDefault');
+    try {
+      const path=editing?.id?`/api/account/addresses/${encodeURIComponent(editing.id)}`:'/api/account/addresses';
+      const response=await apiRequest(path,{method:editing?.id?'PUT':'POST',body:JSON.stringify(values)});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error || 'Could not save this address.');
+      applyAccount(data.account);setEditing(undefined);
+    } catch(saveError) { setError(saveError.message || 'Could not save this address.'); }
+    finally { setSaving(false); }
+  }
+  async function deleteAddress(address) {
+    if(!window.confirm(`Remove the ${address.label} address?`))return;
+    setError('');
+    try {
+      const response=await apiRequest(`/api/account/addresses/${encodeURIComponent(address.id)}`,{method:'DELETE'});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error || 'Could not remove this address.');
+      applyAccount(data.account);
+    } catch(deleteError) { setError(deleteError.message || 'Could not remove this address.'); }
+  }
+
+  return <section className="profile-page">
+    <button className="back-link" onClick={onShop}><ChevronLeft size={16}/> Back to shop</button>
+    <div className="checkout-title"><div className="eyebrow"><span className="eyebrow-line"/>YOUR ACCOUNT</div><h1>Personal <em>details.</em></h1><p>Manage your contact information and saved delivery addresses.</p></div>
+    {error&&<div className="admin-error" role="alert"><AlertTriangle size={15}/>{error}</div>}
+    <div className="profile-layout"><section className="profile-card"><div className="profile-card-title"><span className="brand-mark"><UserRound size={18}/></span><div><h2>Profile</h2><small>{account.role === 'admin' ? 'Administrator' : 'Customer'} account</small></div></div><form className="profile-form" onSubmit={saveProfile}><label>Full name<input value={name} onChange={event=>setName(event.target.value)} required minLength="2" maxLength="80"/></label><label>Email address<input value={account.email} disabled readOnly/></label><label>Mobile number<input type="tel" value={mobile} onChange={event=>setMobile(event.target.value)} required pattern="[0-9+() -]{8,30}" maxLength="30"/></label><button className="button-primary" disabled={saving}>{saving?'Saving…':'Save profile'} <Check size={15}/></button></form></section>
+      <section className="profile-card"><div className="profile-card-title"><span className="brand-mark"><Truck size={18}/></span><div><h2>Delivery addresses</h2><small>{addresses.length} of 10 saved</small></div><button className="button-primary admin-add-button" onClick={()=>setEditing({})}><Plus size={15}/> Add address</button></div>
+        {addresses.length?<div className="saved-address-list">{addresses.map(address=><article className="saved-address" key={address.id}><div><span><b>{address.label}</b>{address.isDefault&&<small className="default-address-tag">DEFAULT</small>}</span><p>{address.recipient} · {address.phone}<br/>{address.address}<br/>{address.city}, {address.state} {address.pincode}</p></div><div className="admin-row-actions"><button onClick={()=>setEditing(address)} aria-label={`Edit ${address.label}`}><Pencil size={14}/></button><button className="danger-action" onClick={()=>deleteAddress(address)} aria-label={`Delete ${address.label}`}><Trash2 size={14}/></button></div></article>)}</div>:<p className="admin-empty-note">Save a delivery address for faster checkout.</p>}
+        {editing!==undefined&&<form className="address-editor" key={editing.id || 'new-address'} onSubmit={saveAddress}><div className="address-editor-title"><b>{editing.id?'Edit address':'New address'}</b><button type="button" onClick={()=>setEditing(undefined)} aria-label="Close address form"><X size={16}/></button></div><div className="profile-form address-form"><label>Label<input name="label" defaultValue={editing.label || ''} required maxLength="40" placeholder="Home, Work…"/></label><label>Recipient name<input name="recipient" defaultValue={editing.recipient || name} required maxLength="100"/></label><label>Phone<input name="phone" type="tel" defaultValue={editing.phone || mobile} required pattern="[0-9+() -]{8,30}" maxLength="30"/></label><label className="profile-field-wide">House / street<input name="address" defaultValue={editing.address || ''} required maxLength="240"/></label><label>City<input name="city" defaultValue={editing.city || ''} required maxLength="100"/></label><label>State<input name="state" defaultValue={editing.state || ''} required maxLength="100"/></label><label>PIN code<input name="pincode" inputMode="numeric" defaultValue={editing.pincode || ''} required pattern="[0-9]{6}" maxLength="6"/></label><label className="profile-default-check"><input type="checkbox" name="isDefault" defaultChecked={editing.isDefault || !addresses.length}/> Set as default address</label><button className="button-primary" disabled={saving}>{saving?'Saving…':'Save address'} <Check size={15}/></button></div></form>}
+      </section></div>
+  </section>;
+}
+
 function AdminPage({ account, onShop }) {
   const [summary, setSummary] = useState(null);
   const [items, setItems] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [section, setSection] = useState('overview');
@@ -314,14 +384,15 @@ function AdminPage({ account, onShop }) {
   async function refresh() {
     setLoading(true); setError('');
     try {
-      const [summaryResponse, productsResponse, ordersResponse] = await Promise.all([
-        apiRequest('/api/admin/summary'), apiRequest('/api/admin/products'), apiRequest('/api/admin/orders'),
+      const [summaryResponse, productsResponse, ordersResponse, customersResponse] = await Promise.all([
+        apiRequest('/api/admin/summary'), apiRequest('/api/admin/products'), apiRequest('/api/admin/orders'), apiRequest('/api/admin/customers'),
       ]);
-      const [summaryData, productsData, ordersData] = await Promise.all([summaryResponse.json(), productsResponse.json(), ordersResponse.json()]);
+      const [summaryData, productsData, ordersData, customersData] = await Promise.all([summaryResponse.json(), productsResponse.json(), ordersResponse.json(), customersResponse.json()]);
       if (!summaryResponse.ok) throw new Error(summaryData.error || 'Could not load dashboard indicators.');
       if (!productsResponse.ok) throw new Error(productsData.error || 'Could not load products.');
       if (!ordersResponse.ok) throw new Error(ordersData.error || 'Could not load orders.');
-      setSummary(summaryData); setItems(productsData.items || []); setOrders(ordersData.items || []);
+      if (!customersResponse.ok) throw new Error(customersData.error || 'Could not load customers.');
+      setSummary(summaryData); setItems(productsData.items || []); setOrders(ordersData.items || []); setCustomers(customersData.items || []);
     } catch (requestError) { setError(requestError.message || 'Could not reach the admin service.'); }
     finally { setLoading(false); }
   }
@@ -364,10 +435,19 @@ function AdminPage({ account, onShop }) {
       await refresh();
     } catch (updateError) { setError(updateError.message || 'Could not update the order.'); }
   }
+  async function updateCustomer(customer, status) {
+    setError('');
+    try {
+      const response=await apiRequest(`/api/admin/customers/${encodeURIComponent(customer.id)}`,{method:'PATCH',body:JSON.stringify({status})});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error || 'Could not update this account.');
+      await refresh();
+    } catch(updateError) { setError(updateError.message || 'Could not update this account.'); }
+  }
 
   return <section className="admin-page">
     <div className="admin-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>TECHPARTS ADMIN</div><h1>Admin <em>workspace.</em></h1><p>Signed in as {account.email}</p></div><button className="button-text admin-store-link" onClick={onShop}>View storefront <ArrowUpRight size={15}/></button></div>
-    <div className="admin-tabs" role="tablist" aria-label="Admin sections"><button className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}>Overview</button><button className={section === 'products' ? 'selected' : ''} onClick={() => setSection('products')}>Product management <span>{items.length}</span></button><button className={section === 'orders' ? 'selected' : ''} onClick={() => setSection('orders')}>Orders <span>{orders.length}</span></button></div>
+    <div className="admin-tabs" role="tablist" aria-label="Admin sections"><button className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}>Overview</button><button className={section === 'products' ? 'selected' : ''} onClick={() => setSection('products')}>Product management <span>{items.length}</span></button><button className={section === 'orders' ? 'selected' : ''} onClick={() => setSection('orders')}>Orders <span>{orders.length}</span></button><button className={section === 'customers' ? 'selected' : ''} onClick={() => setSection('customers')}>Customers <span>{customers.length}</span></button></div>
     {error && <div className="admin-error" role="alert"><AlertTriangle size={15}/>{error}<button onClick={() => setError('')} aria-label="Dismiss message"><X size={15}/></button></div>}
     {loading && !summary ? <div className="admin-loading">Loading your dashboard…</div> : section === 'overview' ? <>
       <div className="admin-kpi-grid">
@@ -376,15 +456,26 @@ function AdminPage({ account, onShop }) {
         <AdminKpi label="Low stock" value={summary?.lowStock ?? '—'} detail="Five units or fewer" tone="warning"/>
         <AdminKpi label="Out of stock" value={summary?.outOfStock ?? '—'} detail="Needs an inventory update" tone="muted"/>
         <AdminKpi label="Inventory value" value={summary ? money(summary.inventoryValue) : '—'} detail="Current price × units in stock"/>
-        <AdminKpi label="Customer accounts" value={summary?.customers ?? '—'} detail="Registered customer accounts"/>
+        <AdminKpi label="Customer accounts" value={summary?.customers ?? '—'} detail="Active registered customers"/>
+        <AdminKpi label="Blocked accounts" value={summary?.blockedCustomers ?? '—'} detail="Cannot start a new session" tone="muted"/>
         <AdminKpi label="Orders" value={summary?.orders ?? '—'} detail="All customer orders"/>
         <AdminKpi label="Awaiting fulfilment" value={summary?.pendingOrders ?? '—'} detail="Placed or processing" tone="warning"/>
         <AdminKpi label="Recorded paid total" value={summary ? money(summary.paidRevenue) : '—'} detail="Manual payment records only"/>
       </div>
       <div className="admin-overview-grid"><section className="admin-panel"><div className="admin-panel-head"><div><span className="eyebrow">INVENTORY CHECK</span><h2>Needs attention</h2></div><button className="text-action" onClick={() => setSection('products')}>Manage products <ArrowRight size={14}/></button></div>{items.filter(product => Number(product.stock) <= 5).slice(0, 6).length ? <div className="attention-list">{items.filter(product => Number(product.stock) <= 5).slice(0, 6).map(product => <div key={product.id}><span><b>{product.name}</b><small>{product.category}</small></span><strong className={Number(product.stock) === 0 ? 'stock-out' : 'stock-low'}>{Number(product.stock) === 0 ? 'Out of stock' : `${product.stock} left`}</strong></div>)}</div> : <p className="admin-empty-note">All products have more than five units in stock.</p>}</section><section className="admin-panel admin-preview-panel"><span className="admin-preview-icon"><ShieldCheck size={18}/></span><span className="eyebrow">STORE REPORTING</span><h2>Orders and revenue</h2><p>{summary?.orders || 0} persisted order records. Order totals are not counted as revenue until an admin records payment; no payment gateway is connected.</p><button className="text-action" onClick={() => setSection('orders')}>Review orders <ArrowRight size={14}/></button></section></div>
-    </> : section === 'products' ? <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CATALOGUE</span><h2>Product management <span>({filtered.length})</span></h2></div><button className="button-primary admin-add-button" onClick={() => setEditor(null)}><Plus size={16}/> Add product</button></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search products…" aria-label="Search products"/></label><select value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter by category"><option>All categories</option>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></div>{filtered.length ? <div className="admin-table-scroll"><table className="admin-product-table"><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><span className="admin-product-name"><b>{product.name}</b><small>{product.model}</small></span></td><td>{product.category}</td><td><b>{money(product.price)}</b>{product.old > product.price && <small className="admin-discount-tag">{Math.round((1-product.price/product.old)*100)}% off</small>}</td><td><span className={`admin-stock-pill ${product.stock > 5 ? 'stock-good' : product.stock > 0 ? 'stock-low-bg' : 'stock-zero'}`}>{product.stock ?? 0} units</span></td><td><span className="admin-row-actions"><button onClick={() => setEditor(product)} aria-label={`Edit ${product.name}`} title="Edit product"><Pencil size={15}/></button><button className="danger-action" onClick={() => deleteProduct(product)} aria-label={`Delete ${product.name}`} title="Delete product"><Trash2 size={15}/></button></span></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No products match this search.</div>}</section> : <AdminOrders orders={orders} onStatusChange={updateOrder}/ >}
+    </> : section === 'products' ? <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CATALOGUE</span><h2>Product management <span>({filtered.length})</span></h2></div><button className="button-primary admin-add-button" onClick={() => setEditor(null)}><Plus size={16}/> Add product</button></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search products…" aria-label="Search products"/></label><select value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter by category"><option>All categories</option>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></div>{filtered.length ? <div className="admin-table-scroll"><table className="admin-product-table"><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><span className="admin-product-name"><b>{product.name}</b><small>{product.model}</small></span></td><td>{product.category}</td><td><b>{money(product.price)}</b>{product.old > product.price && <small className="admin-discount-tag">{Math.round((1-product.price/product.old)*100)}% off</small>}</td><td><span className={`admin-stock-pill ${product.stock > 5 ? 'stock-good' : product.stock > 0 ? 'stock-low-bg' : 'stock-zero'}`}>{product.stock ?? 0} units</span></td><td><span className="admin-row-actions"><button onClick={() => setEditor(product)} aria-label={`Edit ${product.name}`} title="Edit product"><Pencil size={15}/></button><button className="danger-action" onClick={() => deleteProduct(product)} aria-label={`Delete ${product.name}`} title="Delete product"><Trash2 size={15}/></button></span></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No products match this search.</div>}</section> : section === 'orders' ? <AdminOrders orders={orders} onStatusChange={updateOrder}/> : <AdminCustomers customers={customers} onStatusChange={updateCustomer}/ >}
     {editor !== undefined && <ProductEditor product={editor} saving={saving} onClose={() => setEditor(undefined)} onSave={saveProduct}/>}
   </section>;
+}
+
+function AdminCustomers({customers,onStatusChange}) {
+  const [query,setQuery]=useState('');
+  const filtered=customers.filter(customer=>`${customer.name} ${customer.email} ${customer.mobile}`.toLowerCase().includes(query.trim().toLowerCase()));
+  function changeStatus(customer,status) {
+    if(status==='blocked'&&!window.confirm(`Block ${customer.name}? They will be signed out and unable to sign in until reactivated.`))return;
+    onStatusChange(customer,status);
+  }
+  return <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CUSTOMER ACCOUNTS</span><h2>Customer management <span>({filtered.length})</span></h2></div></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="Search name, email, or mobile…" aria-label="Search customer accounts"/></label></div>{filtered.length?<div className="admin-table-scroll"><table className="admin-product-table admin-customers-table"><thead><tr><th>Customer</th><th>Mobile</th><th>Orders</th><th>Joined</th><th>Account status</th></tr></thead><tbody>{filtered.map(customer=><tr key={customer.id}><td><span className="admin-product-name"><b>{customer.name}</b><small>{customer.email}</small></span></td><td>{customer.mobile || '—'}</td><td>{customer.orderCount}</td><td>{new Date(customer.createdAt).toLocaleDateString('en-IN')}</td><td><select aria-label={`Change status for ${customer.name}`} value={customer.status} onChange={event=>changeStatus(customer,event.target.value)}><option value="active">Active</option><option value="blocked">Blocked</option></select></td></tr>)}</tbody></table></div>:<div className="admin-empty-note">No customer accounts match this search.</div>}<p className="storage-note">Blocking deletes active sessions and prevents the customer from signing in. It does not delete account or order records.</p></section>;
 }
 
 function AdminOrders({orders,onStatusChange}) {
@@ -456,9 +547,13 @@ function CompareDialog({products:items,onClose,onAdd}) {
   return <div className="modal-layer" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="compare-modal" role="dialog" aria-modal="true" aria-label="Compare components"><div className="drawer-head"><div><span className="eyebrow">SIDE BY SIDE</span><h2>Find your fit <span>({items.length})</span></h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X/></button></div><div className="compare-table" style={{'--compare-columns':items.length}}><div className="compare-label"></div>{items.map(p=><div className="compare-item" key={p.id}><img src={photo(p.image)} alt=""/><b>{p.name}</b><small>{p.model}</small><strong>{money(p.price)}</strong><button className="button-primary" onClick={()=>onAdd(p)}>Add to bag</button></div>)}<div className="compare-label">Category</div>{items.map(p=><div className="compare-value" key={p.id}>{p.category}</div>)}<div className="compare-label">Customer rating</div>{items.map(p=><div className="compare-value" key={p.id}>{p.reviews>0?<><span className="star">★</span> {p.rating} ({p.reviews})</>:'No reviews yet'}</div>)}<div className="compare-label">Price</div>{items.map(p=><div className="compare-value" key={p.id}>{money(p.price)}</div>)}<div className="compare-label">Availability</div>{items.map(p=><div className="compare-value available" key={p.id}><Check size={13}/> Demo listing</div>)}</div><p className="demo-note">Comparison uses the available demo catalogue fields. Confirm product specifications before purchase.</p></section></div>;
 }
 
-function CheckoutPage({items,total,error,onBack,onPlace}) {
+function CheckoutPage({account,items,total,error,onBack,onPlace}) {
   const [payment,setPayment]=useState('upi');
   const [submitting,setSubmitting]=useState(false);
+  const addresses=account.addresses || [];
+  const initialAddress=addresses.find(address=>address.isDefault) || addresses[0];
+  const [selectedAddressId,setSelectedAddressId]=useState(initialAddress?.id || '');
+  const selectedAddress=addresses.find(address=>address.id===selectedAddressId);
   async function submitOrder(event) {
     event.preventDefault();
     if (submitting) return;
@@ -470,9 +565,10 @@ function CheckoutPage({items,total,error,onBack,onPlace}) {
   return <section className="checkout-page">
     <button className="back-link" onClick={onBack}><ChevronLeft size={16}/> Back to your bag</button>
     <div className="checkout-title"><div className="eyebrow"><span className="eyebrow-line"/>JUST ONE MORE THING</div><h1>Delivery <em>details.</em></h1><p>Your order will be saved to your account. Online payment and shipping labels are not connected yet.</p></div>
-    <div className="checkout-layout"><form className="checkout-form" onSubmit={submitOrder}>
+    <div className="checkout-layout"><form className="checkout-form" key={selectedAddressId} onSubmit={submitOrder}>
       <div className="checkout-section-head"><span>01</span><div><b>Who’s receiving it?</b><small>These details will be saved with your order.</small></div></div>
-      <div className="form-grid"><label>Full name<input name="name" autoComplete="name" required minLength="2" placeholder="Your name"/></label><label>Email address<input name="email" type="email" autoComplete="email" required placeholder="you@example.com"/></label><label>Mobile number<input name="phone" type="tel" autoComplete="tel" required pattern="[0-9+() -]{8,16}" placeholder="+91 98765 43210"/></label><label>PIN code<input name="pincode" inputMode="numeric" autoComplete="postal-code" required pattern="[0-9]{6}" maxLength="6" placeholder="6-digit PIN code"/></label><label className="form-wide">Street address<input name="address" autoComplete="street-address" required minLength="5" placeholder="House number and street"/></label><label>City<input name="city" autoComplete="address-level2" required placeholder="City"/></label><label>State<input name="state" autoComplete="address-level1" required placeholder="State"/></label></div>
+      {addresses.length>0&&<label className="saved-address-select">Use a saved address<select value={selectedAddressId} onChange={event=>setSelectedAddressId(event.target.value)}><option value="">Enter a new address</option>{addresses.map(address=><option key={address.id} value={address.id}>{address.label} · {address.city}</option>)}</select></label>}
+      <div className="form-grid"><label>Full name<input name="name" autoComplete="name" required minLength="2" defaultValue={selectedAddress?.recipient || account.name || ''} placeholder="Your name"/></label><label>Email address<input name="email" type="email" autoComplete="email" required defaultValue={account.email || ''} placeholder="you@example.com"/></label><label>Mobile number<input name="phone" type="tel" autoComplete="tel" required pattern="[0-9+() -]{8,30}" defaultValue={selectedAddress?.phone || account.mobile || ''} placeholder="+91 98765 43210"/></label><label>PIN code<input name="pincode" inputMode="numeric" autoComplete="postal-code" required pattern="[0-9]{6}" maxLength="6" defaultValue={selectedAddress?.pincode || ''} placeholder="6-digit PIN code"/></label><label className="form-wide">Street address<input name="address" autoComplete="street-address" required minLength="5" defaultValue={selectedAddress?.address || ''} placeholder="House number and street"/></label><label>City<input name="city" autoComplete="address-level2" required defaultValue={selectedAddress?.city || ''} placeholder="City"/></label><label>State<input name="state" autoComplete="address-level1" required defaultValue={selectedAddress?.state || ''} placeholder="State"/></label></div>
       <div className="checkout-section-head payment-head"><span>02</span><div><b>Payment preference</b><small>This records your preference; no payment is collected.</small></div></div>
       <div className="payment-options"><label className={payment==='upi'?'payment-option active':'payment-option'}><input type="radio" name="payment" value="upi" checked={payment==='upi'} onChange={()=>setPayment('upi')}/><span className="radio-dot"/><span><b>UPI</b><small>Payment pending · gateway not connected</small></span></label><label className={payment==='cod'?'payment-option active':'payment-option'}><input type="radio" name="payment" value="cod" checked={payment==='cod'} onChange={()=>setPayment('cod')}/><span className="radio-dot"/><span><b>Cash on delivery</b><small>Payment preference only</small></span></label></div>
       {error&&<p className="checkout-error" role="alert">{error}</p>}<button className="button-primary submit-order" type="submit" disabled={submitting}>{submitting?'Placing order…':'Place order'} {!submitting&&<ArrowRight size={16}/>}</button>
