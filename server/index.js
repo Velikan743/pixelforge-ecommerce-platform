@@ -26,7 +26,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/account') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders'))) {
+  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/account') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders') || req.path.startsWith('/api/categories') || req.path.startsWith('/api/brands'))) {
     return res.status(403).json({ error: 'This site is not allowed to use the account service.' });
   }
   if (req.method === 'OPTIONS') return res.sendStatus(origin && allowedOrigins.has(origin) ? 204 : 403);
@@ -39,6 +39,9 @@ const productSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   model: { type: String, default: '' },
   category: { type: String, required: true, index: true },
+  brand: { type: String, default: '', index: true },
+  sku: { type: String, default: '', trim: true, maxlength: 64 },
+  specifications: { type: mongoose.Schema.Types.Mixed, default: {} },
   description: { type: String, default: '', maxlength: 4000 },
   price: { type: Number, required: true, min: 0 },
   old: { type: Number, min: 0 },
@@ -52,12 +55,28 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ name: 'text', model: 'text', category: 'text' });
 const Product = mongoose.models.Product || mongoose.model('Product', productSchema);
 const productCategories = new Set(['Graphics Cards', 'Processors', 'Motherboards', 'Memory', 'Storage', 'Power', 'Cases', 'Cooling', 'Monitors', 'Peripherals', 'Accessories']);
+const productBrands = new Set();
+const categorySchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true, trim: true, maxlength: 80 },
+  description: { type: String, default: '', trim: true, maxlength: 500 },
+  parent: { type: String, default: '', trim: true, maxlength: 80 },
+  displayOrder: { type: Number, default: 0, min: 0, max: 10000 },
+  active: { type: Boolean, default: true },
+}, { timestamps: true, versionKey: false });
+const Category = mongoose.models.Category || mongoose.model('Category', categorySchema);
+const brandSchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true, trim: true, maxlength: 80 },
+  description: { type: String, default: '', trim: true, maxlength: 500 },
+  website: { type: String, default: '', trim: true, maxlength: 200 },
+  active: { type: Boolean, default: true },
+}, { timestamps: true, versionKey: false });
+const Brand = mongoose.models.Brand || mongoose.model('Brand', brandSchema);
 const productColors = new Set(['lavender', 'mint', 'peach', 'blue']);
 const defaultProductDescription = 'Demo catalogue product. Confirm specifications and availability before purchase.';
 
 function productJson(product) {
   const record = typeof product.toObject === 'function' ? product.toObject() : product;
-  return { ...record, id: String(record.id || record._id) };
+  return { ...record, specifications: record.specifications instanceof Map ? Object.fromEntries(record.specifications) : record.specifications || {}, id: String(record.id || record._id) };
 }
 async function findProductById(id) {
   const byPublicId = await Product.findOne({ id: String(id) });
@@ -68,7 +87,14 @@ function parseProductInput(body) {
   const name = String(body?.name || '').trim();
   const model = String(body?.model || '').trim();
   const category = String(body?.category || '');
+  const brand = String(body?.brand || '').trim();
+  const sku = String(body?.sku || '').trim().toUpperCase();
   const description = String(body?.description || '').trim();
+  let specifications = body?.specifications || {};
+  if (typeof specifications === 'string') {
+    try { specifications = specifications.trim() ? JSON.parse(specifications) : {}; }
+    catch { return { error: 'Specifications must be valid JSON.' }; }
+  }
   const regularPrice = Number(body?.regularPrice);
   const discountPercent = Number(body?.discountPercent || 0);
   const stock = Number(body?.stock);
@@ -76,7 +102,17 @@ function parseProductInput(body) {
   const color = String(body?.color || 'blue');
   if (name.length < 2 || name.length > 120) return { error: 'Product name must be between 2 and 120 characters.' };
   if (model.length > 180) return { error: 'Product model details must be 180 characters or less.' };
-  if (!productCategories.has(category)) return { error: 'Choose a valid product category.' };
+  if (!productCategories.has(category)) return { error: 'Choose an active product category.' };
+  if (brand && !productBrands.has(brand)) return { error: 'Choose an active brand.' };
+  if (sku.length > 64 || (sku && !/^[A-Z0-9._-]+$/.test(sku))) return { error: 'SKU may contain letters, numbers, dots, underscores, and hyphens.' };
+  if (!specifications || typeof specifications !== 'object' || Array.isArray(specifications) || Object.keys(specifications).length > 50) return { error: 'Specifications must be an object with up to 50 fields.' };
+  const normalizedSpecifications = {};
+  for (const [key, rawValue] of Object.entries(specifications)) {
+    const cleanKey = key.trim();
+    const cleanValue = String(rawValue ?? '').trim();
+    if (!cleanKey || cleanKey.length > 60 || cleanValue.length > 240) return { error: 'Each specification name must be 1–60 characters and its value 240 characters or less.' };
+    normalizedSpecifications[cleanKey] = cleanValue;
+  }
   if (!Number.isFinite(regularPrice) || regularPrice < 1 || regularPrice > 100000000) return { error: 'Enter a valid price greater than zero.' };
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 90) return { error: 'Discount must be between 0 and 90 percent.' };
   if (!Number.isInteger(stock) || stock < 0 || stock > 10000000) return { error: 'Stock must be a whole number between 0 and 10,000,000.' };
@@ -84,7 +120,7 @@ function parseProductInput(body) {
   if (image.length > 120) return { error: 'Image identifier must be 120 characters or less.' };
   if (!productColors.has(color)) return { error: 'Choose a valid product color.' };
   const price = Math.round(regularPrice * (1 - discountPercent / 100));
-  return { value: { name, model, category, description, price, old: discountPercent ? regularPrice : undefined, stock, image, color } };
+  return { value: { name, model, category, brand, sku, specifications: normalizedSpecifications, description, price, old: discountPercent ? regularPrice : undefined, stock, image, color } };
 }
 
 const addressSchema = new mongoose.Schema({
@@ -520,6 +556,99 @@ app.get('/api/admin/products', requireAuth, requirePasswordChangeComplete, requi
     res.json({ items: products.map(productJson) });
   } catch (error) { next(error); }
 });
+function parseCategoryInput(body) {
+  const name=String(body?.name || '').trim();
+  const description=String(body?.description || '').trim();
+  const parent=String(body?.parent || '').trim();
+  const displayOrder=Number(body?.displayOrder || 0);
+  if(name.length<2||name.length>80)return{error:'Category name must be between 2 and 80 characters.'};
+  if(description.length>500||parent.length>80)return{error:'Category description or parent is too long.'};
+  if(!Number.isInteger(displayOrder)||displayOrder<0||displayOrder>10000)return{error:'Display order must be a whole number from 0 to 10,000.'};
+  return{value:{name,description,parent,displayOrder,active:body?.active===undefined?true:Boolean(body.active)}};
+}
+function parseBrandInput(body) {
+  const name=String(body?.name || '').trim();
+  const description=String(body?.description || '').trim();
+  const website=String(body?.website || '').trim();
+  if(name.length<2||name.length>80)return{error:'Brand name must be between 2 and 80 characters.'};
+  if(description.length>500||website.length>200)return{error:'Brand description or website is too long.'};
+  if(website&&!/^https?:\/\//i.test(website))return{error:'Website must start with http:// or https://.'};
+  return{value:{name,description,website,active:body?.active===undefined?true:Boolean(body.active)}};
+}
+function categoryJson(category) { return { id:String(category._id),name:category.name,description:category.description,parent:category.parent,displayOrder:category.displayOrder,active:category.active }; }
+function brandJson(brand) { return { id:String(brand._id),name:brand.name,description:brand.description,website:brand.website,active:brand.active }; }
+app.get('/api/categories', async (_req,res,next)=>{
+  try { const categoriesList=await Category.find({active:true}).sort({displayOrder:1,name:1}).lean(); res.json({items:categoriesList.map(categoryJson)}); }
+  catch(error){next(error);}
+});
+app.get('/api/brands', async (_req,res,next)=>{
+  try { const brandsList=await Brand.find({active:true}).sort({name:1}).lean(); res.json({items:brandsList.map(brandJson)}); }
+  catch(error){next(error);}
+});
+app.get('/api/admin/categories',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(_req,res,next)=>{
+  try { const items=await Category.find({}).sort({displayOrder:1,name:1}).lean(); res.json({items:items.map(categoryJson)}); }
+  catch(error){next(error);}
+});
+app.post('/api/admin/categories',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const parsed=parseCategoryInput(req.body); if(parsed.error)return res.status(400).json({error:parsed.error});
+    if(parsed.value.parent&&!await Category.exists({name:parsed.value.parent,active:true}))return res.status(400).json({error:'Choose an existing active parent category.'});
+    const category=await Category.create(parsed.value); if(category.active)productCategories.add(category.name);
+    res.status(201).json({category:categoryJson(category)});
+  } catch(error){if(error?.code===11000)return res.status(409).json({error:'A category with that name already exists.'});next(error);}
+});
+app.put('/api/admin/categories/:id',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const parsed=parseCategoryInput(req.body); if(parsed.error)return res.status(400).json({error:parsed.error});
+    if(parsed.value.parent&&!await Category.exists({name:parsed.value.parent,active:true,_id:{$ne:req.params.id}}))return res.status(400).json({error:'Choose an existing active parent category.'});
+    const category=await Category.findById(req.params.id); if(!category)return res.status(404).json({error:'Category not found.'});
+    const previousName=category.name;
+    if(category.active&&!parsed.value.active&&await Product.exists({category:previousName}))return res.status(409).json({error:'Move the products to another category before disabling this one.'});
+    Object.assign(category,parsed.value); await category.save();
+    if(previousName!==category.name){await Product.updateMany({category:previousName},{$set:{category:category.name}});await Category.updateMany({parent:previousName},{$set:{parent:category.name}});}
+    if(category.active)productCategories.add(category.name); else productCategories.delete(category.name);
+    if(previousName!==category.name)productCategories.delete(previousName);
+    res.json({category:categoryJson(category)});
+  } catch(error){if(error?.code===11000)return res.status(409).json({error:'A category with that name already exists.'});next(error);}
+});
+app.delete('/api/admin/categories/:id',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const category=await Category.findById(req.params.id); if(!category)return res.status(404).json({error:'Category not found.'});
+    if(await Product.exists({category:category.name}))return res.status(409).json({error:'Move or remove products from this category before deleting it.'});
+    if(await Category.exists({parent:category.name}))return res.status(409).json({error:'Remove or reassign its subcategories first.'});
+    await category.deleteOne(); productCategories.delete(category.name); res.json({ok:true,id:String(category._id)});
+  } catch(error){next(error);}
+});
+app.get('/api/admin/brands',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(_req,res,next)=>{
+  try { const items=await Brand.find({}).sort({name:1}).lean(); res.json({items:items.map(brandJson)}); }
+  catch(error){next(error);}
+});
+app.post('/api/admin/brands',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const parsed=parseBrandInput(req.body); if(parsed.error)return res.status(400).json({error:parsed.error});
+    const brand=await Brand.create(parsed.value); if(brand.active)productBrands.add(brand.name); res.status(201).json({brand:brandJson(brand)});
+  } catch(error){if(error?.code===11000)return res.status(409).json({error:'A brand with that name already exists.'});next(error);}
+});
+app.put('/api/admin/brands/:id',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const parsed=parseBrandInput(req.body); if(parsed.error)return res.status(400).json({error:parsed.error});
+    const brand=await Brand.findById(req.params.id); if(!brand)return res.status(404).json({error:'Brand not found.'});
+    const previousName=brand.name;
+    if(brand.active&&!parsed.value.active&&await Product.exists({brand:previousName}))return res.status(409).json({error:'Update the products using this brand before disabling it.'});
+    Object.assign(brand,parsed.value); await brand.save();
+    if(previousName!==brand.name)await Product.updateMany({brand:previousName},{$set:{brand:brand.name}});
+    if(brand.active)productBrands.add(brand.name); else productBrands.delete(brand.name);
+    if(previousName!==brand.name)productBrands.delete(previousName);
+    res.json({brand:brandJson(brand)});
+  } catch(error){if(error?.code===11000)return res.status(409).json({error:'A brand with that name already exists.'});next(error);}
+});
+app.delete('/api/admin/brands/:id',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const brand=await Brand.findById(req.params.id); if(!brand)return res.status(404).json({error:'Brand not found.'});
+    if(await Product.exists({brand:brand.name}))return res.status(409).json({error:'Update products using this brand before deleting it.'});
+    await brand.deleteOne(); productBrands.delete(brand.name); res.json({ok:true,id:String(brand._id)});
+  } catch(error){next(error);}
+});
 app.post('/api/admin/products', requireAuth, requirePasswordChangeComplete, requireRole('admin'), async (req, res, next) => {
   try {
     const parsed = parseProductInput(req.body);
@@ -552,20 +681,27 @@ app.delete('/api/admin/products/:id', requireAuth, requirePasswordChangeComplete
 
 app.get('/api/products', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
   try {
-    const { q = '', category, page = '1', limit = '24' } = req.query;
+    const { q = '', category, brand, minPrice, maxPrice, inStock, sort = 'featured', page = '1', limit = '24' } = req.query;
     const safeLimit = Math.min(Math.max(Number(limit) || 24, 1), 100);
     const safePage = Math.max(Number(page) || 1, 1);
     const databaseHasProducts = mongoose.connection.readyState === 1 && await Product.exists({});
     if (!databaseHasProducts) {
       const needle = String(q).trim().toLowerCase();
-      const matching = seedProducts.filter(p => (!category || p.category === category) && (!needle || `${p.name} ${p.model} ${p.category}`.toLowerCase().includes(needle)));
+      const matching = seedProducts.filter(p => {
+        const price=Number(p.price)||0;
+        return (!category || p.category === category) && (!brand || inferBrand(p)===brand) && (!needle || `${p.name} ${p.model} ${inferBrand(p)} ${p.category}`.toLowerCase().includes(needle)) && (minPrice===undefined || price>=Number(minPrice)) && (maxPrice===undefined || price<=Number(maxPrice)) && (inStock!=='true'||Number(p.stock)>0);
+      });
       return res.json({ items: matching.slice((safePage - 1) * safeLimit, safePage * safeLimit), total: matching.length, page: safePage, pages: Math.ceil(matching.length / safeLimit) });
     }
     const filter = {};
     if (category) filter.category = String(category);
+    if (brand) filter.brand = String(brand);
+    if (minPrice !== undefined || maxPrice !== undefined) filter.price = { ...(minPrice !== undefined ? { $gte: Math.max(0, Number(minPrice)||0) } : {}), ...(maxPrice !== undefined ? { $lte: Math.max(0, Number(maxPrice)||0) } : {}) };
+    if (inStock === 'true') filter.stock = { $gt: 0 };
     if (q) filter.$text = { $search: String(q).slice(0, 80) };
+    const sortOptions = { featured: { badge: -1, _id: 1 }, price_asc: { price: 1 }, price_desc: { price: -1 }, newest: { createdAt: -1 }, popularity: { reviews: -1, rating: -1 }, rating: { rating: -1, reviews: -1 }, discount: { old: -1, price: 1 } };
     const [items, total] = await Promise.all([
-      Product.find(filter).sort({ createdAt: -1, _id: 1 }).skip((safePage - 1) * safeLimit).limit(safeLimit).lean(),
+      Product.find(filter).sort(sortOptions[String(sort)] || sortOptions.featured).skip((safePage - 1) * safeLimit).limit(safeLimit).lean(),
       Product.countDocuments(filter),
     ]);
     res.json({ items: items.map(productJson), total, page: safePage, pages: Math.ceil(total / safeLimit) });
@@ -613,11 +749,38 @@ async function seedAdminAccount() {
   console.log(`Provisioned initial admin account: ${email}`);
 }
 
+const brandCandidates = ['Cable Matters','Cooler Master','Fractal Design','Lian Li','PowerColor','TeamGroup','ViewSonic','be quiet!','Thermaltake','DeepCool','Logitech','Keychron','Corsair','Gigabyte','Sapphire','Ergotron','Crucial','Kingston','HyperX','Noctua','Arctic','Sabrent','Seagate','Anker','Razer','Zotac','Lenovo','NVIDIA','Intel','AMD','MSI','ASUS','Dell','HP','AOC','Acer','BenQ','NZXT','LG','WD'];
+function inferBrand(product) {
+  const source=`${product.name} ${product.model}`.toLowerCase();
+  return brandCandidates.find(brand=>source.includes(brand.toLowerCase())) || '';
+}
+async function seedTaxonomy() {
+  const categoryNames=[...productCategories];
+  await Promise.all(categoryNames.map((name,displayOrder)=>Category.updateOne({name},{$setOnInsert:{name,description:`Browse ${name.toLowerCase()} and compatible PC components.`,displayOrder,active:true}},{upsert:true})));
+  const brands=new Set(seedProducts.map(inferBrand).filter(Boolean));
+  await Promise.all([...brands].map(name=>Brand.updateOne({name},{$setOnInsert:{name,description:'Brand represented in the TechParts catalogue.',active:true}},{upsert:true})));
+  productCategories.clear();
+  for(const category of await Category.find({active:true},{name:1}).lean())productCategories.add(category.name);
+  productBrands.clear();
+  for(const brand of await Brand.find({active:true},{name:1}).lean())productBrands.add(brand.name);
+  const existingProducts=await Product.find({}).select('id name model brand sku specifications');
+  for(const product of existingProducts){
+    let changed=false;
+    if(!product.brand){product.brand=inferBrand(product);changed=true;}
+    if(!product.sku){product.sku=`TP-${String(product.id || product._id).replace(/[^A-Za-z0-9]/g,'').slice(-16).toUpperCase()}`;changed=true;}
+    if(!product.specifications){product.specifications={};changed=true;}
+    if(changed)await product.save();
+  }
+}
+
 async function seedCatalogue() {
   if (await Product.exists({})) return;
   await Product.insertMany(seedProducts.map(product => ({
     ...product,
     id: String(product.id),
+    brand: inferBrand(product),
+    sku: `TP-${String(product.id).padStart(5,'0')}`,
+    specifications: {},
     description: defaultProductDescription,
     stock: 0,
   })));
@@ -628,7 +791,8 @@ async function start() {
   if (sameSite === 'none' && !secureCookie) throw new Error('SameSite=None cookies require COOKIE_SECURE=true.');
   if (process.env.MONGODB_URI) {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init()]);
+    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init()]);
+    await seedTaxonomy();
     await seedCatalogue();
     await seedAdminAccount();
     console.log('Connected to MongoDB; account sessions enabled');

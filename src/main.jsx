@@ -39,6 +39,10 @@ function App() {
   const [active, setActive] = useState('All components');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('Featured');
+  const [brandFilter,setBrandFilter]=useState('All brands');
+  const [minPrice,setMinPrice]=useState('');
+  const [maxPrice,setMaxPrice]=useState('');
+  const [availableOnly,setAvailableOnly]=useState(false);
   const [cart, setCart] = useState([]);
   const [wishlist, setWishlist] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -47,6 +51,9 @@ function App() {
   const [details, setDetails] = useState(null);
   const [showWishlist, setShowWishlist] = useState(false);
   const [catalog, setCatalog] = useState(products);
+  const [storeCategories,setStoreCategories]=useState(categories);
+  const [storeBrands,setStoreBrands]=useState([]);
+  const [catalogVersion,setCatalogVersion]=useState(0);
   const [drawer, setDrawer] = useState(false);
   const [builder, setBuilder] = useState(false);
   const [checkout, setCheckout] = useState(false);
@@ -111,7 +118,20 @@ function App() {
       .then(data => { if (data?.items?.length) setCatalog(data.items); })
       .catch(error => { if (error.name !== 'AbortError') console.info('Using the local demo catalogue.'); });
     return () => controller.abort();
-  }, [auth.status]);
+  }, [auth.status,catalogVersion]);
+
+  useEffect(()=>{
+    if(auth.status!=='authenticated')return;
+    const controller=new AbortController();
+    Promise.all([apiRequest('/api/categories',{signal:controller.signal}),apiRequest('/api/brands',{signal:controller.signal})])
+      .then(async([categoryResponse,brandResponse])=>{
+        const categoryData=categoryResponse.ok?await categoryResponse.json():null;
+        const brandData=brandResponse.ok?await brandResponse.json():null;
+        if(categoryData?.items)setStoreCategories(categoryData.items.map(item=>({...item,short:categories.find(category=>category.name===item.name)?.short||item.name,icon:categories.find(category=>category.name===item.name)?.icon||PackageCheck})));
+        if(brandData?.items)setStoreBrands(brandData.items);
+      }).catch(error=>{if(error.name!=='AbortError')console.info('Using the built-in category list.');});
+    return()=>controller.abort();
+  },[auth.status,catalogVersion]);
 
   useEffect(() => {
     if (auth.status !== 'authenticated') return;
@@ -150,12 +170,21 @@ function App() {
     } catch { setToast('Cannot verify your session. Please try again.'); }
     window.setTimeout(() => setToast(''), 2500);
   }
+  function returnToStore() { setAdminPage(false);setCatalogVersion(version=>version+1); }
 
   const visibleProducts = useMemo(() => {
     const q = query.toLowerCase().trim();
-    const list = catalog.filter(p => (active === 'All components' || p.category === active) && (!q || `${p.name} ${p.model} ${p.category}`.toLowerCase().includes(q)));
-    return sort === 'Price: low to high' ? [...list].sort((a,b)=>a.price-b.price) : sort === 'Price: high to low' ? [...list].sort((a,b)=>b.price-a.price) : list;
-  }, [active, catalog, query, sort]);
+    const list = catalog.filter(p => (active === 'All components' || p.category === active) && (!q || `${p.name} ${p.model} ${p.brand || ''} ${p.sku || ''} ${p.category} ${Object.values(p.specifications || {}).join(' ')}`.toLowerCase().includes(q)) && (brandFilter==='All brands'||p.brand===brandFilter) && (minPrice===''||Number(p.price)>=Number(minPrice)) && (maxPrice===''||Number(p.price)<=Number(maxPrice)) && (!availableOnly||Number(p.stock)>0));
+    const sortFunctions={
+      'Price: low to high':(a,b)=>a.price-b.price,
+      'Price: high to low':(a,b)=>b.price-a.price,
+      'Newest':(a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0),
+      'Popularity':(a,b)=>(b.reviews||0)-(a.reviews||0),
+      'Rating':(a,b)=>Number(b.rating||0)-Number(a.rating||0),
+      'Discount':(a,b)=>((Number(b.old)||Number(b.price))-Number(b.price))-((Number(a.old)||Number(a.price))-Number(a.price)),
+    };
+    return sortFunctions[sort]?[...list].sort(sortFunctions[sort]):list;
+  }, [active, availableOnly, brandFilter, catalog, maxPrice, minPrice, query, sort]);
   const cartCount = cart.reduce((sum, item) => sum + item.qty, 0);
   const cartTotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
 
@@ -225,16 +254,17 @@ function App() {
       <div className="header-actions"><label className="search-box"><Search size={17}/><input aria-label="Search products" placeholder="Search components..." value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌘ K</kbd></label><span className="account-chip" title={auth.account.email}><UserRound size={15}/><span>{auth.account.name}</span>{auth.account.role === 'admin' && <b>ADMIN</b>}</span><button className="signout-button" onClick={signOut}>Sign out</button><button className="icon-button theme-button" aria-label="Toggle theme" onClick={toggleTheme}>{dark?<Sun size={18}/>:<Moon size={18}/>}</button><button className="wishlist-header" onClick={()=>setShowWishlist(true)} aria-label={`Wishlist, ${wishlist.length} products`}><Heart size={18}/><span>Saved</span>{wishlist.length>0&&<b>{wishlist.length}</b>}</button><button className="bag-button" onClick={()=>setDrawer(true)} aria-label={`Shopping bag, ${cartCount} items`}><ShoppingBag size={19}/><span>Bag</span><b>{cartCount}</b></button><button className="icon-button menu-button" onClick={()=>setMobileMenu(!mobileMenu)} aria-label="Toggle navigation">{mobileMenu?<X size={20}/>:<Menu size={20}/>}</button></div>
     </header>
     <main>
-      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account} onShop={()=>setAdminPage(false)}/> : profilePage ? <ProfilePage account={auth.account} onAccountUpdate={account=>setAuth(current=>({...current,account}))} onShop={()=>setProfilePage(false)}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage account={auth.account} items={cart} total={cartTotal} error={checkoutError} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
+      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account} categoryOptions={storeCategories} brandOptions={storeBrands} onShop={returnToStore}/> : profilePage ? <ProfilePage account={auth.account} onAccountUpdate={account=>setAuth(current=>({...current,account}))} onShop={()=>setProfilePage(false)}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage account={auth.account} items={cart} total={cartTotal} error={checkoutError} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
         <section className="hero" id="home">
           <div className="hero-copy"><div className="eyebrow"><span className="eyebrow-line"/>THE NEXT LEVEL STARTS HERE</div><h1>Your setup.<br/>Your <em>story.</em></h1><p>Thoughtful gear for the way you play, create, and work. Find your next favorite piece.</p><div className="hero-buttons"><a className="button-primary" href="#products">Explore components <ArrowRight size={16}/></a><button className="button-text" onClick={()=>setBuilder(true)}>Build your PC <ArrowUpRight size={15}/></button></div><div className="hero-proof"><div className="avatars"><span>R</span><span>A</span><span>K</span><span>+</span></div><div><strong>Loved by 12,000+ builders</strong><small>★★★★★ <span>4.9 / 5 average rating</span></small></div></div></div>
           <div className="hero-art"><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-glow"/><div className="hero-product"><img src={photo('photo-1587202372775-e229f172b9d7')} alt="High-performance graphics card"/><span className="floating-tag tag-top"><span className="tag-dot"/>NEW DROP <strong>RTX 50 SERIES</strong></span><span className="floating-tag tag-bottom"><span className="tag-icon"><Zap size={17}/></span><span>Built for more<small>Make every frame count</small></span><ArrowUpRight size={17}/></span></div><div className="hero-scribble">MAKE<br/>IT YOURS<span>↗</span></div><span className="hero-index">01 / 04</span></div>
         </section>
         <section className="trust-strip" aria-label="Shopping benefits"><div><Truck/><span><b>Free delivery</b><small>on orders over ₹2,000</small></span></div><div><ShieldCheck/><span><b>Genuine gear</b><small>100% authorized products</small></span></div><div><PackageCheck/><span><b>Easy returns</b><small>7-day return window</small></span></div><div><Heart/><span><b>Here to help</b><small>Real humans, always</small></span></div></section>
-        <section className="categories-section section" id="categories"><div className="section-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>FIND YOUR THING</div><h2>Browse by <em>category.</em></h2></div><a className="subtle-link" href="#products">All categories <ArrowRight size={15}/></a></div><div className="category-grid">{categories.map(({name,short,icon:Icon},index)=>{const count=catalog.filter(product=>product.category===name).length;const art={'Graphics Cards':'RTX',Processors:'CPU',Motherboards:'AM5',Memory:'DDR5',Storage:'NVMe',Power:'WATT',Cases:'ATX',Cooling:'°C',Monitors:'QHD',Peripherals:'PRO',Accessories:'GEAR'}[name];return <button key={name} className={`category-card cat-${index}`} onClick={()=>{setActive(name);document.getElementById('products')?.scrollIntoView({behavior:'smooth'})}}><span className="category-icon"><Icon size={22}/></span><span className="category-copy"><b>{short}</b><small>{count} {count===1?'product':'products'}</small></span><ArrowUpRight className="category-arrow" size={17}/><span className="category-art">{art}</span></button>})}</div></section>
+        <section className="categories-section section" id="categories"><div className="section-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>FIND YOUR THING</div><h2>Browse by <em>category.</em></h2></div><a className="subtle-link" href="#products">All categories <ArrowRight size={15}/></a></div><div className="category-grid">{storeCategories.map(({name,short,icon:Icon},index)=>{const count=catalog.filter(product=>product.category===name).length;const art={'Graphics Cards':'RTX',Processors:'CPU',Motherboards:'AM5',Memory:'DDR5',Storage:'NVMe',Power:'WATT',Cases:'ATX',Cooling:'°C',Monitors:'QHD',Peripherals:'PRO',Accessories:'GEAR'}[name];return <button key={name} className={`category-card cat-${index}`} onClick={()=>{setActive(name);document.getElementById('products')?.scrollIntoView({behavior:'smooth'})}}><span className="category-icon"><Icon size={22}/></span><span className="category-copy"><b>{short}</b><small>{count} {count===1?'product':'products'}</small></span><ArrowUpRight className="category-arrow" size={17}/><span className="category-art">{art}</span></button>})}</div></section>
         <section className="products-section section" id="products"><div className="section-heading product-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>GOOD GEAR, GREAT DAYS</div><h2>Made for your <em>next.</em></h2><p>A few community favorites to get you started.</p><small className="catalog-disclaimer">Demo catalogue · listed prices, availability, and ratings need verification before sale.</small></div><a className="subtle-link desktop-link" href="#products">Explore the shop <ArrowRight size={15}/></a></div>
-          <div className="product-toolbar"><div className="filter-tabs"><button className={active==='All components'?'selected':''} onClick={()=>setActive('All components')}>Everything <span>{catalog.length}</span></button>{['Graphics Cards','Processors','Memory','Storage'].map(c=><button key={c} className={active===c?'selected':''} onClick={()=>setActive(c)}>{c}</button>)}</div><label className="sort-control"><SlidersHorizontal size={15}/><span>Sort:</span><select value={sort} onChange={e=>setSort(e.target.value)} aria-label="Sort products"><option>Featured</option><option>Price: low to high</option><option>Price: high to low</option></select><ChevronDown size={14}/></label></div>
-          {visibleProducts.length ? <div className="product-grid">{visibleProducts.map(p=><ProductCard key={p.id} product={p} onAdd={addToCart} onDetails={setDetails} onWishlist={toggleWishlist} onCompare={toggleCompare} saved={wishlist.some(item=>item.id===p.id)} compared={compare.some(item=>item.id===p.id)}/>)}</div> : <div className="empty-state"><Search/><b>No components found</b><span>Try another search or browse everything.</span><button onClick={()=>{setQuery('');setActive('All components')}}>Clear filters</button></div>}
+          <div className="product-toolbar"><div className="filter-tabs"><button className={active==='All components'?'selected':''} onClick={()=>setActive('All components')}>Everything <span>{catalog.length}</span></button>{storeCategories.map(({name,short})=><button key={name} className={active===name?'selected':''} onClick={()=>setActive(name)}>{short||name}</button>)}</div><label className="sort-control"><SlidersHorizontal size={15}/><span>Sort:</span><select value={sort} onChange={e=>setSort(e.target.value)} aria-label="Sort products"><option>Featured</option><option>Price: low to high</option><option>Price: high to low</option><option>Newest</option><option>Popularity</option><option>Rating</option><option>Discount</option></select><ChevronDown size={14}/></label></div>
+          <div className="catalog-filters"><label>Brand<select value={brandFilter} onChange={event=>setBrandFilter(event.target.value)}><option>All brands</option>{storeBrands.map(brand=><option key={brand.id||brand.name} value={brand.name}>{brand.name}</option>)}</select></label><label>Min price<input inputMode="numeric" type="number" min="0" value={minPrice} onChange={event=>setMinPrice(event.target.value)} placeholder="₹ 0"/></label><label>Max price<input inputMode="numeric" type="number" min="0" value={maxPrice} onChange={event=>setMaxPrice(event.target.value)} placeholder="No limit"/></label><label className="availability-filter"><input type="checkbox" checked={availableOnly} onChange={event=>setAvailableOnly(event.target.checked)}/> In stock only</label><button className="button-text" onClick={()=>{setBrandFilter('All brands');setMinPrice('');setMaxPrice('');setAvailableOnly(false);setActive('All components')}}>Clear filters</button><span className="filter-result-count">{visibleProducts.length} products</span></div>
+          {visibleProducts.length ? <div className="product-grid">{visibleProducts.map(p=><ProductCard key={p.id} product={p} onAdd={addToCart} onDetails={setDetails} onWishlist={toggleWishlist} onCompare={toggleCompare} saved={wishlist.some(item=>item.id===p.id)} compared={compare.some(item=>item.id===p.id)}/>)}</div> : <div className="empty-state"><Search/><b>No components found</b><span>Try another search or browse everything.</span><button onClick={()=>{setQuery('');setActive('All components');setBrandFilter('All brands');setMinPrice('');setMaxPrice('');setAvailableOnly(false)}}>Clear filters</button></div>}
           <a className="mobile-all subtle-link" href="#products">Explore the shop <ArrowRight size={15}/></a>
         </section>
         <section className="builder-banner section" id="builder"><div className="builder-graphic"><div className="builder-ring"/><div className="builder-chip"><Cpu size={48}/><span>AM5</span></div><div className="builder-node node-one">GPU <b>✓</b></div><div className="builder-node node-two">RAM <b>✓</b></div><div className="builder-node node-three">CPU <b>✓</b></div><div className="builder-mini">BUILD<br/>01</div></div><div className="builder-copy"><div className="eyebrow"><span className="eyebrow-line"/>A LITTLE HELP, A LOT OF POWER</div><h2>Big ideas.<br/><em>Zero guesswork.</em></h2><p>Build your dream setup with our step-by-step PC Builder. We’ll check every part for compatibility along the way.</p><div className="builder-features"><span><Check size={15}/> Smart compatibility checks</span><span><Check size={15}/> Live build total</span></div><button className="button-primary" onClick={()=>setBuilder(true)}>Start your build <ArrowRight size={16}/></button><div className="builder-note"><Sparkles size={13}/> Even beginners build like pros.</div></div></section>
@@ -368,11 +398,13 @@ function ProfilePage({account,onAccountUpdate,onShop}) {
   </section>;
 }
 
-function AdminPage({ account, onShop }) {
+function AdminPage({ account, categoryOptions, brandOptions, onShop }) {
   const [summary, setSummary] = useState(null);
   const [items, setItems] = useState([]);
   const [orders, setOrders] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [categoryRecords, setCategoryRecords] = useState([]);
+  const [brandRecords, setBrandRecords] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [section, setSection] = useState('overview');
@@ -384,22 +416,24 @@ function AdminPage({ account, onShop }) {
   async function refresh() {
     setLoading(true); setError('');
     try {
-      const [summaryResponse, productsResponse, ordersResponse, customersResponse] = await Promise.all([
-        apiRequest('/api/admin/summary'), apiRequest('/api/admin/products'), apiRequest('/api/admin/orders'), apiRequest('/api/admin/customers'),
+      const [summaryResponse, productsResponse, ordersResponse, customersResponse, categoriesResponse, brandsResponse] = await Promise.all([
+        apiRequest('/api/admin/summary'), apiRequest('/api/admin/products'), apiRequest('/api/admin/orders'), apiRequest('/api/admin/customers'), apiRequest('/api/admin/categories'), apiRequest('/api/admin/brands'),
       ]);
-      const [summaryData, productsData, ordersData, customersData] = await Promise.all([summaryResponse.json(), productsResponse.json(), ordersResponse.json(), customersResponse.json()]);
+      const [summaryData, productsData, ordersData, customersData, categoriesData, brandsData] = await Promise.all([summaryResponse.json(), productsResponse.json(), ordersResponse.json(), customersResponse.json(), categoriesResponse.json(), brandsResponse.json()]);
       if (!summaryResponse.ok) throw new Error(summaryData.error || 'Could not load dashboard indicators.');
       if (!productsResponse.ok) throw new Error(productsData.error || 'Could not load products.');
       if (!ordersResponse.ok) throw new Error(ordersData.error || 'Could not load orders.');
       if (!customersResponse.ok) throw new Error(customersData.error || 'Could not load customers.');
-      setSummary(summaryData); setItems(productsData.items || []); setOrders(ordersData.items || []); setCustomers(customersData.items || []);
+      if (!categoriesResponse.ok) throw new Error(categoriesData.error || 'Could not load categories.');
+      if (!brandsResponse.ok) throw new Error(brandsData.error || 'Could not load brands.');
+      setSummary(summaryData); setItems(productsData.items || []); setOrders(ordersData.items || []); setCustomers(customersData.items || []); setCategoryRecords(categoriesData.items || []); setBrandRecords(brandsData.items || []);
     } catch (requestError) { setError(requestError.message || 'Could not reach the admin service.'); }
     finally { setLoading(false); }
   }
   useEffect(() => { refresh(); }, []);
 
   const filtered = items.filter(product => {
-    const matchesQuery = `${product.name} ${product.model} ${product.category}`.toLowerCase().includes(query.trim().toLowerCase());
+    const matchesQuery = `${product.name} ${product.model} ${product.brand || ''} ${product.category}`.toLowerCase().includes(query.trim().toLowerCase());
     return matchesQuery && (category === 'All categories' || product.category === category);
   });
 
@@ -444,10 +478,31 @@ function AdminPage({ account, onShop }) {
       await refresh();
     } catch(updateError) { setError(updateError.message || 'Could not update this account.'); }
   }
+  async function saveTaxonomy(kind,item) {
+    setError('');
+    try {
+      const path=`/api/admin/${kind}${item.id?`/${encodeURIComponent(item.id)}`:''}`;
+      const response=await apiRequest(path,{method:item.id?'PUT':'POST',body:JSON.stringify(item)});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error || 'Could not save this record.');
+      await refresh();
+      return true;
+    } catch(saveError) { setError(saveError.message || 'Could not save this record.'); return false; }
+  }
+  async function deleteTaxonomy(kind,item) {
+    if(!window.confirm(`Delete ${item.name}?`))return;
+    setError('');
+    try {
+      const response=await apiRequest(`/api/admin/${kind}/${encodeURIComponent(item.id)}`,{method:'DELETE'});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error || 'Could not delete this record.');
+      await refresh();
+    } catch(deleteError) { setError(deleteError.message || 'Could not delete this record.'); }
+  }
 
   return <section className="admin-page">
     <div className="admin-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>TECHPARTS ADMIN</div><h1>Admin <em>workspace.</em></h1><p>Signed in as {account.email}</p></div><button className="button-text admin-store-link" onClick={onShop}>View storefront <ArrowUpRight size={15}/></button></div>
-    <div className="admin-tabs" role="tablist" aria-label="Admin sections"><button className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}>Overview</button><button className={section === 'products' ? 'selected' : ''} onClick={() => setSection('products')}>Product management <span>{items.length}</span></button><button className={section === 'orders' ? 'selected' : ''} onClick={() => setSection('orders')}>Orders <span>{orders.length}</span></button><button className={section === 'customers' ? 'selected' : ''} onClick={() => setSection('customers')}>Customers <span>{customers.length}</span></button></div>
+    <div className="admin-tabs" role="tablist" aria-label="Admin sections"><button className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}>Overview</button><button className={section === 'products' ? 'selected' : ''} onClick={() => setSection('products')}>Product management <span>{items.length}</span></button><button className={section === 'orders' ? 'selected' : ''} onClick={() => setSection('orders')}>Orders <span>{orders.length}</span></button><button className={section === 'customers' ? 'selected' : ''} onClick={() => setSection('customers')}>Customers <span>{customers.length}</span></button><button className={section === 'taxonomy' ? 'selected' : ''} onClick={() => setSection('taxonomy')}>Categories & brands</button></div>
     {error && <div className="admin-error" role="alert"><AlertTriangle size={15}/>{error}<button onClick={() => setError('')} aria-label="Dismiss message"><X size={15}/></button></div>}
     {loading && !summary ? <div className="admin-loading">Loading your dashboard…</div> : section === 'overview' ? <>
       <div className="admin-kpi-grid">
@@ -463,8 +518,8 @@ function AdminPage({ account, onShop }) {
         <AdminKpi label="Recorded paid total" value={summary ? money(summary.paidRevenue) : '—'} detail="Manual payment records only"/>
       </div>
       <div className="admin-overview-grid"><section className="admin-panel"><div className="admin-panel-head"><div><span className="eyebrow">INVENTORY CHECK</span><h2>Needs attention</h2></div><button className="text-action" onClick={() => setSection('products')}>Manage products <ArrowRight size={14}/></button></div>{items.filter(product => Number(product.stock) <= 5).slice(0, 6).length ? <div className="attention-list">{items.filter(product => Number(product.stock) <= 5).slice(0, 6).map(product => <div key={product.id}><span><b>{product.name}</b><small>{product.category}</small></span><strong className={Number(product.stock) === 0 ? 'stock-out' : 'stock-low'}>{Number(product.stock) === 0 ? 'Out of stock' : `${product.stock} left`}</strong></div>)}</div> : <p className="admin-empty-note">All products have more than five units in stock.</p>}</section><section className="admin-panel admin-preview-panel"><span className="admin-preview-icon"><ShieldCheck size={18}/></span><span className="eyebrow">STORE REPORTING</span><h2>Orders and revenue</h2><p>{summary?.orders || 0} persisted order records. Order totals are not counted as revenue until an admin records payment; no payment gateway is connected.</p><button className="text-action" onClick={() => setSection('orders')}>Review orders <ArrowRight size={14}/></button></section></div>
-    </> : section === 'products' ? <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CATALOGUE</span><h2>Product management <span>({filtered.length})</span></h2></div><button className="button-primary admin-add-button" onClick={() => setEditor(null)}><Plus size={16}/> Add product</button></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search products…" aria-label="Search products"/></label><select value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter by category"><option>All categories</option>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></div>{filtered.length ? <div className="admin-table-scroll"><table className="admin-product-table"><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><span className="admin-product-name"><b>{product.name}</b><small>{product.model}</small></span></td><td>{product.category}</td><td><b>{money(product.price)}</b>{product.old > product.price && <small className="admin-discount-tag">{Math.round((1-product.price/product.old)*100)}% off</small>}</td><td><span className={`admin-stock-pill ${product.stock > 5 ? 'stock-good' : product.stock > 0 ? 'stock-low-bg' : 'stock-zero'}`}>{product.stock ?? 0} units</span></td><td><span className="admin-row-actions"><button onClick={() => setEditor(product)} aria-label={`Edit ${product.name}`} title="Edit product"><Pencil size={15}/></button><button className="danger-action" onClick={() => deleteProduct(product)} aria-label={`Delete ${product.name}`} title="Delete product"><Trash2 size={15}/></button></span></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No products match this search.</div>}</section> : section === 'orders' ? <AdminOrders orders={orders} onStatusChange={updateOrder}/> : <AdminCustomers customers={customers} onStatusChange={updateCustomer}/ >}
-    {editor !== undefined && <ProductEditor product={editor} saving={saving} onClose={() => setEditor(undefined)} onSave={saveProduct}/>}
+    </> : section === 'products' ? <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CATALOGUE</span><h2>Product management <span>({filtered.length})</span></h2></div><button className="button-primary admin-add-button" onClick={() => setEditor(null)}><Plus size={16}/> Add product</button></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search products…" aria-label="Search products"/></label><select value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter by category"><option>All categories</option>{categoryOptions.map(item => <option key={item.id}>{item.name}</option>)}</select></div>{filtered.length ? <div className="admin-table-scroll"><table className="admin-product-table"><thead><tr><th>Product</th><th>Brand</th><th>Category</th><th>SKU</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><span className="admin-product-name"><b>{product.name}</b><small>{product.model}</small></span></td><td>{product.brand || '—'}</td><td>{product.category}</td><td>{product.sku || '—'}</td><td><b>{money(product.price)}</b>{product.old > product.price && <small className="admin-discount-tag">{Math.round((1-product.price/product.old)*100)}% off</small>}</td><td><span className={`admin-stock-pill ${product.stock > 5 ? 'stock-good' : product.stock > 0 ? 'stock-low-bg' : 'stock-zero'}`}>{product.stock ?? 0} units</span></td><td><span className="admin-row-actions"><button onClick={() => setEditor(product)} aria-label={`Edit ${product.name}`} title="Edit product"><Pencil size={15}/></button><button className="danger-action" onClick={() => deleteProduct(product)} aria-label={`Delete ${product.name}`} title="Delete product"><Trash2 size={15}/></button></span></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No products match this search.</div>}</section> : section === 'orders' ? <AdminOrders orders={orders} onStatusChange={updateOrder}/> : section === 'customers' ? <AdminCustomers customers={customers} onStatusChange={updateCustomer}/> : <TaxonomyManager categories={categoryRecords} brands={brandRecords} onSave={saveTaxonomy} onDelete={deleteTaxonomy}/>}
+    {editor !== undefined && <ProductEditor product={editor} categories={categoryOptions} brands={brandOptions} saving={saving} onClose={() => setEditor(undefined)} onSave={saveProduct}/>}
   </section>;
 }
 
@@ -478,6 +533,25 @@ function AdminCustomers({customers,onStatusChange}) {
   return <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CUSTOMER ACCOUNTS</span><h2>Customer management <span>({filtered.length})</span></h2></div></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="Search name, email, or mobile…" aria-label="Search customer accounts"/></label></div>{filtered.length?<div className="admin-table-scroll"><table className="admin-product-table admin-customers-table"><thead><tr><th>Customer</th><th>Mobile</th><th>Orders</th><th>Joined</th><th>Account status</th></tr></thead><tbody>{filtered.map(customer=><tr key={customer.id}><td><span className="admin-product-name"><b>{customer.name}</b><small>{customer.email}</small></span></td><td>{customer.mobile || '—'}</td><td>{customer.orderCount}</td><td>{new Date(customer.createdAt).toLocaleDateString('en-IN')}</td><td><select aria-label={`Change status for ${customer.name}`} value={customer.status} onChange={event=>changeStatus(customer,event.target.value)}><option value="active">Active</option><option value="blocked">Blocked</option></select></td></tr>)}</tbody></table></div>:<div className="admin-empty-note">No customer accounts match this search.</div>}<p className="storage-note">Blocking deletes active sessions and prevents the customer from signing in. It does not delete account or order records.</p></section>;
 }
 
+function TaxonomyManager({categories:categoryItems,brands:brandItems,onSave,onDelete}) {
+  const [kind,setKind]=useState('categories');
+  const [editor,setEditor]=useState(undefined);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState('');
+  const rows=kind==='categories'?categoryItems:brandItems;
+  async function submit(event) {
+    event.preventDefault();setSaving(true);setError('');
+    const form=new FormData(event.currentTarget);
+    const payload=Object.fromEntries(form.entries());
+    payload.active=form.has('active');
+    if(kind==='categories')payload.displayOrder=Number(payload.displayOrder || 0);
+    try { if(await onSave(kind,editor?.id?{...payload,id:editor.id}:payload))setEditor(undefined); }
+    catch(saveError) { setError(saveError.message || 'Could not save this record.'); }
+    finally { setSaving(false); }
+  }
+  return <section className="taxonomy-layout"><div className="admin-tabs taxonomy-tabs"><button className={kind==='categories'?'selected':''} onClick={()=>{setKind('categories');setEditor(undefined)}}>Categories <span>{categoryItems.length}</span></button><button className={kind==='brands'?'selected':''} onClick={()=>{setKind('brands');setEditor(undefined)}}>Brands <span>{brandItems.length}</span></button></div><section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">STORE CATALOGUE</span><h2>{kind==='categories'?'Category management':'Brand management'} <span>({rows.length})</span></h2></div><button className="button-primary admin-add-button" onClick={()=>setEditor({})}><Plus size={15}/> Add {kind==='categories'?'category':'brand'}</button></div>{error&&<div className="admin-error" role="alert">{error}</div>}{editor!==undefined&&<form className="taxonomy-editor" key={`${kind}-${editor.id||'new'}`} onSubmit={submit}><div className="taxonomy-form-grid"><label>Name<input name="name" required minLength="2" maxLength="80" defaultValue={editor.name||''}/></label>{kind==='categories'?<><label>Parent category<select name="parent" defaultValue={editor.parent||''}><option value="">Top-level category</option>{categoryItems.filter(item=>item.active&&item.id!==editor.id).map(item=><option key={item.id} value={item.name}>{item.name}</option>)}</select></label><label>Display order<input name="displayOrder" type="number" min="0" max="10000" step="1" defaultValue={editor.displayOrder??0}/></label></>:<label>Website<input name="website" type="url" maxLength="200" defaultValue={editor.website||''} placeholder="https://brand.example"/></label>}<label className="taxonomy-wide">Description<textarea name="description" rows="3" maxLength="500" defaultValue={editor.description||''}/></label><label className="profile-default-check taxonomy-wide"><input type="checkbox" name="active" defaultChecked={editor.active!==false}/> Active in storefront</label></div><div className="admin-editor-actions"><button type="button" className="button-text" onClick={()=>setEditor(undefined)}>Cancel</button><button className="button-primary" disabled={saving}>{saving?'Saving…':editor.id?'Save changes':'Add'} <Check size={15}/></button></div></form>}{rows.length?<div className="taxonomy-list">{rows.map(item=><article className="taxonomy-row" key={item.id}><div><b>{item.name}</b><small>{kind==='categories'?(item.parent?`Subcategory of ${item.parent}`:'Top-level category'):item.website||'Brand record'}</small><p>{item.description||'No description'}</p></div><span className={`admin-stock-pill ${item.active?'stock-good':'stock-zero'}`}>{item.active?'Active':'Disabled'}</span><div className="admin-row-actions"><button onClick={()=>setEditor(item)} aria-label={`Edit ${item.name}`}><Pencil size={14}/></button><button className="danger-action" onClick={()=>onDelete(kind,item)} aria-label={`Delete ${item.name}`}><Trash2 size={14}/></button></div></article>)}</div>:<div className="admin-empty-note">No {kind} have been added.</div>}</section></section>;
+}
+
 function AdminOrders({orders,onStatusChange}) {
   const statusTransitions = { Placed: ['Processing', 'Cancelled'], Processing: ['Packed', 'Cancelled'], Packed: ['Shipped', 'Cancelled'], Shipped: ['Out for Delivery'], 'Out for Delivery': ['Delivered'] };
   const paymentTransitions = { pending: ['paid'], paid: ['refunded'], refunded: [] };
@@ -488,7 +562,7 @@ function AdminKpi({label,value,detail,tone=''}) {
   return <article className={`admin-kpi ${tone}`}><span>{label}</span><b>{value}</b><small>{detail}</small></article>;
 }
 
-function ProductEditor({product,saving,onClose,onSave}) {
+function ProductEditor({product,categories:categoryList,brands:brandList,saving,onClose,onSave}) {
   const isEditing = Boolean(product?.id);
   const regularPrice = isEditing && product.old > product.price ? product.old : product?.price ?? '';
   const discount = isEditing && product.old > product.price ? Math.round((1-product.price/product.old)*100) : 0;
@@ -497,7 +571,7 @@ function ProductEditor({product,saving,onClose,onSave}) {
     const values = Object.fromEntries(new FormData(event.currentTarget).entries());
     await onSave({ ...values, regularPrice: Number(values.regularPrice), discountPercent: Number(values.discountPercent || 0), stock: Number(values.stock) });
   }
-  return <div className="admin-modal-layer" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="admin-editor" role="dialog" aria-modal="true" aria-label={isEditing ? 'Edit product' : 'Add product'}><header className="admin-editor-head"><div><span className="eyebrow">{isEditing ? 'UPDATE CATALOGUE' : 'NEW CATALOGUE ITEM'}</span><h2>{isEditing ? 'Edit product' : 'Add product'}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close editor"><X size={19}/></button></header><form className="admin-editor-form" onSubmit={submit}><label className="admin-field-wide">Product name<input name="name" required minLength="2" maxLength="120" defaultValue={product?.name || ''} placeholder="Product name"/></label><label className="admin-field-wide">Model / short specs<input name="model" maxLength="180" defaultValue={product?.model || ''} placeholder="Brand · key specifications"/></label><label>Category<select name="category" defaultValue={product?.category || categories[0].name}>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></label><label>Stock units<input name="stock" type="number" required min="0" step="1" defaultValue={product?.stock ?? 0}/></label><label>Regular price (₹)<input name="regularPrice" type="number" required min="1" step="1" defaultValue={regularPrice}/></label><label>Discount (%)<input name="discountPercent" type="number" min="0" max="90" step="1" defaultValue={discount}/></label><label className="admin-field-wide">Description<textarea name="description" maxLength="4000" rows="4" defaultValue={product?.description || ''} placeholder="Product details shown to customers"/></label><label>Image ID<input name="image" maxLength="120" defaultValue={product?.image || 'photo-1591488320449-011701bb6704'} placeholder="photo-…"/></label><label>Image tint<select name="color" defaultValue={product?.color || 'blue'}><option value="blue">Blue</option><option value="lavender">Lavender</option><option value="mint">Mint</option><option value="peach">Peach</option></select></label><div className="admin-editor-actions"><button type="button" className="button-text" onClick={onClose}>Cancel</button><button className="button-primary" disabled={saving}>{saving ? 'Saving…' : isEditing ? 'Save changes' : 'Add product'} <ArrowRight size={15}/></button></div></form></section></div>;
+  return <div className="admin-modal-layer" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="admin-editor" role="dialog" aria-modal="true" aria-label={isEditing ? 'Edit product' : 'Add product'}><header className="admin-editor-head"><div><span className="eyebrow">{isEditing ? 'UPDATE CATALOGUE' : 'NEW CATALOGUE ITEM'}</span><h2>{isEditing ? 'Edit product' : 'Add product'}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close editor"><X size={19}/></button></header><form className="admin-editor-form" onSubmit={submit}><label className="admin-field-wide">Product name<input name="name" required minLength="2" maxLength="120" defaultValue={product?.name || ''} placeholder="Product name"/></label><label className="admin-field-wide">Model / short specs<input name="model" maxLength="180" defaultValue={product?.model || ''} placeholder="Brand · key specifications"/></label><label>Brand<select name="brand" defaultValue={product?.brand || ""}><option value="">Choose a brand</option>{brandList.map(item=><option key={item.id} value={item.name}>{item.name}</option>)}</select></label><label>SKU<input name="sku" maxLength="64" defaultValue={product?.sku || ""} placeholder="TP-00001"/></label><label>Category<select name="category" defaultValue={product?.category || categoryList[0]?.name || ""}>{categoryList.map(item => <option key={item.id}>{item.name}</option>)}</select></label><label>Stock units<input name="stock" type="number" required min="0" step="1" defaultValue={product?.stock ?? 0}/></label><label>Regular price (₹)<input name="regularPrice" type="number" required min="1" step="1" defaultValue={regularPrice}/></label><label>Discount (%)<input name="discountPercent" type="number" min="0" max="90" step="1" defaultValue={discount}/></label><label className="admin-field-wide">Description<textarea name="description" maxLength="4000" rows="4" defaultValue={product?.description || ''} placeholder="Product details shown to customers"/></label><label className="admin-field-wide">Technical specifications (JSON)<textarea name="specifications" maxLength="12000" rows="5" defaultValue={JSON.stringify(product?.specifications || {}, null, 2)} placeholder="Example: socket AM5, cores 8"/></label><label>Image ID<input name="image" maxLength="120" defaultValue={product?.image || 'photo-1591488320449-011701bb6704'} placeholder="photo-…"/></label><label>Image tint<select name="color" defaultValue={product?.color || 'blue'}><option value="blue">Blue</option><option value="lavender">Lavender</option><option value="mint">Mint</option><option value="peach">Peach</option></select></label><div className="admin-editor-actions"><button type="button" className="button-text" onClick={onClose}>Cancel</button><button className="button-primary" disabled={saving}>{saving ? 'Saving…' : isEditing ? 'Save changes' : 'Add product'} <ArrowRight size={15}/></button></div></form></section></div>;
 }
 
 function PasswordSetup({ account, onComplete, onSignOut }) {
