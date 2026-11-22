@@ -53,6 +53,7 @@ function App() {
   const [placedOrder, setPlacedOrder] = useState(null);
   const [ordersPage, setOrdersPage] = useState(false);
   const [adminPage, setAdminPage] = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
   const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState('');
 
@@ -87,12 +88,19 @@ function App() {
     const prefix = `techparts:${auth.account.id}:`;
     setCart(loadSavedProducts(`${prefix}cart`));
     setWishlist(loadSavedProducts(`${prefix}wishlist`));
-    try {
-      const savedOrders = JSON.parse(localStorage.getItem(`${prefix}orders`) || '[]');
-      setOrders(Array.isArray(savedOrders) ? savedOrders : []);
-    } catch { setOrders([]); }
     setStorageReady(true);
   }, [auth.status, auth.account?.id]);
+
+  useEffect(() => {
+    if (auth.status !== 'authenticated' || !auth.account) return;
+    if (auth.account.role !== 'customer') { setOrders([]); return; }
+    const controller = new AbortController();
+    apiRequest('/api/orders', { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => { if (data) setOrders(data.items || []); })
+      .catch(error => { if (error.name !== 'AbortError') console.info('Could not load saved orders.'); });
+    return () => controller.abort();
+  }, [auth.status, auth.account?.id, auth.account?.role]);
 
   useEffect(() => {
     if (auth.status !== 'authenticated') return;
@@ -118,7 +126,6 @@ function App() {
 
   useEffect(() => { if (storageReady && auth.account) localStorage.setItem(`techparts:${auth.account.id}:cart`, JSON.stringify(cart)); }, [cart, storageReady, auth.account]);
   useEffect(() => { if (storageReady && auth.account) localStorage.setItem(`techparts:${auth.account.id}:wishlist`, JSON.stringify(wishlist)); }, [wishlist, storageReady, auth.account]);
-  useEffect(() => { if (storageReady && auth.account) localStorage.setItem(`techparts:${auth.account.id}:orders`, JSON.stringify(orders)); }, [orders, storageReady, auth.account]);
 
   function handleAuthenticated(account) {
     setStorageReady(false);
@@ -132,6 +139,8 @@ function App() {
     setCheckout(false); setOrdersPage(false); setAdminPage(false);
   }
   async function beginCheckout() {
+    if (!cart.length) return;
+    setCheckoutError('');
     try {
       const response = await apiRequest('/api/auth/me');
       if (response.status === 401) { window.dispatchEvent(new Event('techparts:session-expired')); return; }
@@ -154,6 +163,17 @@ function App() {
   if (auth.account.mustChangePassword) return <div className={dark ? 'app dark' : 'app'}><PasswordSetup account={auth.account} onComplete={handleAuthenticated} onSignOut={signOut}/></div>;
 
   function addToCart(product) {
+    const currentQuantity = cart.find(item => item.id === product.id)?.qty || 0;
+    if (currentQuantity >= 20) {
+      setToast('You can add up to 20 units of one product');
+      window.setTimeout(() => setToast(''), 2200);
+      return;
+    }
+    if (product.stock !== undefined && currentQuantity >= Number(product.stock)) {
+      setToast('There are no more units available for this product');
+      window.setTimeout(() => setToast(''), 2200);
+      return;
+    }
     setCart(current => current.some(i => i.id === product.id) ? current.map(i => i.id === product.id ? {...i, qty:i.qty+1} : i) : [...current, {...product, qty:1}]);
     setToast(`${product.name} added to your bag`);
     window.setTimeout(() => setToast(''), 2200);
@@ -175,21 +195,25 @@ function App() {
   }
   async function placeOrder(delivery) {
     try {
-      const sessionResponse = await apiRequest('/api/auth/me');
-      if (sessionResponse.status === 401) { window.dispatchEvent(new Event('techparts:session-expired')); return false; }
-      if (!sessionResponse.ok) return false;
-    } catch { setToast('Cannot verify your session. Please try again.'); window.setTimeout(() => setToast(''), 2500); return false; }
-    const order = {
-      number: `TP-${new Date().toISOString().slice(2, 10).replaceAll('-', '')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
-      items: cart, total: cartTotal, delivery, status: 'Order preview', createdAt: new Date().toISOString(),
-    };
-    const savedSummary = { number: order.number, items: order.items, total: order.total, status: order.status, createdAt: order.createdAt };
-    setOrders(current => [savedSummary, ...current]);
-    setPlacedOrder(order);
-    setCart([]);
-    setCheckout('confirmed');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    return true;
+      setCheckoutError('');
+      const response = await apiRequest('/api/orders', { method: 'POST', body: JSON.stringify({ items: cart.map(item => ({ id: item.id, quantity: item.qty, expectedPrice: item.price })), delivery, paymentMethod: delivery.payment }) });
+      const data = await response.json();
+      if (!response.ok) { setCheckoutError(data.error || 'Could not place this order.'); return false; }
+      const order = data.order;
+      setOrders(current => [order, ...current]);
+      setPlacedOrder(order);
+      setCart([]);
+      setCheckout('confirmed');
+      setCatalog(current => current.map(product => {
+        const line = order.items.find(item => item.productId === product.id);
+        return line ? { ...product, stock: Math.max(0, Number(product.stock || 0) - line.quantity) } : product;
+      }));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return true;
+    } catch {
+      setCheckoutError('Cannot reach the order service. Check the API and database setup, then try again.');
+      return false;
+    }
   }
 
   return <div className={dark ? 'app dark' : 'app'}>
@@ -200,7 +224,7 @@ function App() {
       <div className="header-actions"><label className="search-box"><Search size={17}/><input aria-label="Search products" placeholder="Search components..." value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌘ K</kbd></label><span className="account-chip" title={auth.account.email}><UserRound size={15}/><span>{auth.account.name}</span>{auth.account.role === 'admin' && <b>ADMIN</b>}</span><button className="signout-button" onClick={signOut}>Sign out</button><button className="icon-button theme-button" aria-label="Toggle theme" onClick={toggleTheme}>{dark?<Sun size={18}/>:<Moon size={18}/>}</button><button className="wishlist-header" onClick={()=>setShowWishlist(true)} aria-label={`Wishlist, ${wishlist.length} products`}><Heart size={18}/><span>Saved</span>{wishlist.length>0&&<b>{wishlist.length}</b>}</button><button className="bag-button" onClick={()=>setDrawer(true)} aria-label={`Shopping bag, ${cartCount} items`}><ShoppingBag size={19}/><span>Bag</span><b>{cartCount}</b></button><button className="icon-button menu-button" onClick={()=>setMobileMenu(!mobileMenu)} aria-label="Toggle navigation">{mobileMenu?<X size={20}/>:<Menu size={20}/>}</button></div>
     </header>
     <main>
-      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account} onShop={()=>setAdminPage(false)}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage items={cart} total={cartTotal} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
+      {adminPage && auth.account.role === 'admin' ? <AdminPage account={auth.account} onShop={()=>setAdminPage(false)}/> : builder ? <Builder onBack={()=>setBuilder(false)} onAdd={addToCart}/> : checkout==='form' ? <CheckoutPage items={cart} total={cartTotal} error={checkoutError} onBack={()=>setCheckout(false)} onPlace={placeOrder}/> : checkout==='confirmed' ? <OrderConfirmation order={placedOrder} onShop={()=>{setCheckout(false);setOrdersPage(false)}} onOrders={()=>{setCheckout(false);setOrdersPage(true)}}/> : ordersPage ? <OrdersPage orders={orders} onShop={()=>setOrdersPage(false)}/> : <>
         <section className="hero" id="home">
           <div className="hero-copy"><div className="eyebrow"><span className="eyebrow-line"/>THE NEXT LEVEL STARTS HERE</div><h1>Your setup.<br/>Your <em>story.</em></h1><p>Thoughtful gear for the way you play, create, and work. Find your next favorite piece.</p><div className="hero-buttons"><a className="button-primary" href="#products">Explore components <ArrowRight size={16}/></a><button className="button-text" onClick={()=>setBuilder(true)}>Build your PC <ArrowUpRight size={15}/></button></div><div className="hero-proof"><div className="avatars"><span>R</span><span>A</span><span>K</span><span>+</span></div><div><strong>Loved by 12,000+ builders</strong><small>★★★★★ <span>4.9 / 5 average rating</span></small></div></div></div>
           <div className="hero-art"><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-glow"/><div className="hero-product"><img src={photo('photo-1587202372775-e229f172b9d7')} alt="High-performance graphics card"/><span className="floating-tag tag-top"><span className="tag-dot"/>NEW DROP <strong>RTX 50 SERIES</strong></span><span className="floating-tag tag-bottom"><span className="tag-icon"><Zap size={17}/></span><span>Built for more<small>Make every frame count</small></span><ArrowUpRight size={17}/></span></div><div className="hero-scribble">MAKE<br/>IT YOURS<span>↗</span></div><span className="hero-index">01 / 04</span></div>
@@ -217,7 +241,7 @@ function App() {
       </>}
     </main>
     <footer className="footer"><a className="brand footer-brand" href="#home"><span className="brand-mark"><Zap size={19} fill="currentColor"/></span><span>tech<span>parts</span><small>BUILD BETTER</small></span></a><p>Good gear makes good things happen.</p><div className="footer-links"><a href="#products">Shop</a><a href="#categories">Categories</a><a href="#builder" onClick={e=>{e.preventDefault();setBuilder(true)}}>PC Builder</a><a href="mailto:hello@techparts.in">Contact</a></div><span className="copyright">© 2025 TechParts India</span></footer>
-    {drawer && <><button className="drawer-scrim" aria-label="Close bag" onClick={()=>setDrawer(false)}/><aside className="cart-drawer"><div className="drawer-head"><div><span className="eyebrow">YOUR GOOD FINDS</span><h2>Your bag <span>({cartCount})</span></h2></div><button className="icon-button" onClick={()=>setDrawer(false)} aria-label="Close"><X/></button></div>{cart.length ? <><div className="cart-items">{cart.map(item=><div className="cart-row" key={item.id}><img src={photo(item.image)} alt=""/><div className="cart-info"><b>{item.name}</b><small>{item.model}</small><div className="quantity"><button onClick={()=>setCart(c=>c.map(i=>i.id===item.id?{...i,qty:Math.max(1,i.qty-1)}:i))}>−</button><span>{item.qty}</span><button onClick={()=>setCart(c=>c.map(i=>i.id===item.id?{...i,qty:i.qty+1}:i))}>+</button><button className="remove" onClick={()=>setCart(c=>c.filter(i=>i.id!==item.id))}>Remove</button></div></div><strong>{money(item.price*item.qty)}</strong></div>)}</div><div className="drawer-bottom"><div className="free-shipping"><Truck size={16}/>{cartTotal>=2000?'Your delivery is on us!':'Add '+money(2000-cartTotal)+' for free delivery'}</div><div className="subtotal"><span>Subtotal</span><b>{money(cartTotal)}</b></div><small>Shipping and applicable taxes are confirmed by the store.</small><button className="button-primary checkout" onClick={beginCheckout}>Continue to checkout <ArrowRight size={16}/></button></div></> : <div className="cart-empty"><span className="cart-empty-icon"><ShoppingBag/></span><h3>A little room for good stuff.</h3><p>Your bag is waiting for something brilliant.</p><button className="button-primary" onClick={()=>setDrawer(false)}>Explore components <ArrowRight size={16}/></button></div>}</aside></>}
+    {drawer && <><button className="drawer-scrim" aria-label="Close bag" onClick={()=>setDrawer(false)}/><aside className="cart-drawer"><div className="drawer-head"><div><span className="eyebrow">YOUR GOOD FINDS</span><h2>Your bag <span>({cartCount})</span></h2></div><button className="icon-button" onClick={()=>setDrawer(false)} aria-label="Close"><X/></button></div>{cart.length ? <><div className="cart-items">{cart.map(item=><div className="cart-row" key={item.id}><img src={photo(item.image)} alt=""/><div className="cart-info"><b>{item.name}</b><small>{item.model}</small><div className="quantity"><button onClick={()=>setCart(c=>c.map(i=>i.id===item.id?{...i,qty:Math.max(1,i.qty-1)}:i))}>−</button><span>{item.qty}</span><button disabled={item.qty >= 20 || (item.stock !== undefined && item.qty >= item.stock)} onClick={()=>addToCart(item)}>+</button><button className="remove" onClick={()=>setCart(c=>c.filter(i=>i.id!==item.id))}>Remove</button></div></div><strong>{money(item.price*item.qty)}</strong></div>)}</div><div className="drawer-bottom"><div className="free-shipping"><Truck size={16}/>{cartTotal>=2000?'Your delivery is on us!':'Add '+money(2000-cartTotal)+' for free delivery'}</div><div className="subtotal"><span>Subtotal</span><b>{money(cartTotal)}</b></div><small>Shipping and applicable taxes are confirmed by the store.</small><button className="button-primary checkout" onClick={beginCheckout}>Continue to checkout <ArrowRight size={16}/></button></div></> : <div className="cart-empty"><span className="cart-empty-icon"><ShoppingBag/></span><h3>A little room for good stuff.</h3><p>Your bag is waiting for something brilliant.</p><button className="button-primary" onClick={()=>setDrawer(false)}>Explore components <ArrowRight size={16}/></button></div>}</aside></>}
     {details && !details.compareView && <ProductDetails product={details} onClose={()=>setDetails(null)} onAdd={addToCart} saved={wishlist.some(item=>item.id===details.id)} onWishlist={()=>toggleWishlist(details)}/>}
     {showWishlist && <CollectionDialog title="Your saved gear" eyebrow="THE SHORTLIST" products={wishlist} empty="Nothing saved just yet." onClose={()=>setShowWishlist(false)} onAdd={addToCart} onRemove={toggleWishlist} onOpen={product=>{setShowWishlist(false);setDetails(product)}}/>}
     {compare.length>0 && <div className="compare-bar"><span><b>{compare.length}</b> of 3 products selected</span><button className="button-primary" onClick={()=>setDetails({compareView:true})}>Compare now <ArrowRight size={15}/></button><button className="compare-clear" onClick={()=>setCompare([])}>Clear</button></div>}
@@ -278,6 +302,7 @@ function AuthGate({ onAuthenticated, initialMessage = '' }) {
 function AdminPage({ account, onShop }) {
   const [summary, setSummary] = useState(null);
   const [items, setItems] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [section, setSection] = useState('overview');
@@ -289,13 +314,14 @@ function AdminPage({ account, onShop }) {
   async function refresh() {
     setLoading(true); setError('');
     try {
-      const [summaryResponse, productsResponse] = await Promise.all([
-        apiRequest('/api/admin/summary'), apiRequest('/api/admin/products'),
+      const [summaryResponse, productsResponse, ordersResponse] = await Promise.all([
+        apiRequest('/api/admin/summary'), apiRequest('/api/admin/products'), apiRequest('/api/admin/orders'),
       ]);
-      const [summaryData, productsData] = await Promise.all([summaryResponse.json(), productsResponse.json()]);
+      const [summaryData, productsData, ordersData] = await Promise.all([summaryResponse.json(), productsResponse.json(), ordersResponse.json()]);
       if (!summaryResponse.ok) throw new Error(summaryData.error || 'Could not load dashboard indicators.');
       if (!productsResponse.ok) throw new Error(productsData.error || 'Could not load products.');
-      setSummary(summaryData); setItems(productsData.items || []);
+      if (!ordersResponse.ok) throw new Error(ordersData.error || 'Could not load orders.');
+      setSummary(summaryData); setItems(productsData.items || []); setOrders(ordersData.items || []);
     } catch (requestError) { setError(requestError.message || 'Could not reach the admin service.'); }
     finally { setLoading(false); }
   }
@@ -329,10 +355,19 @@ function AdminPage({ account, onShop }) {
       await refresh();
     } catch (deleteError) { setError(deleteError.message || 'Could not delete the product.'); }
   }
+  async function updateOrder(order, status) {
+    setError('');
+    try {
+      const response = await apiRequest(`/api/admin/orders/${encodeURIComponent(order.id)}`, { method: 'PATCH', body: JSON.stringify(status) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not update the order.');
+      await refresh();
+    } catch (updateError) { setError(updateError.message || 'Could not update the order.'); }
+  }
 
   return <section className="admin-page">
     <div className="admin-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>TECHPARTS ADMIN</div><h1>Admin <em>workspace.</em></h1><p>Signed in as {account.email}</p></div><button className="button-text admin-store-link" onClick={onShop}>View storefront <ArrowUpRight size={15}/></button></div>
-    <div className="admin-tabs" role="tablist" aria-label="Admin sections"><button className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}>Overview</button><button className={section === 'products' ? 'selected' : ''} onClick={() => setSection('products')}>Product management <span>{items.length}</span></button></div>
+    <div className="admin-tabs" role="tablist" aria-label="Admin sections"><button className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}>Overview</button><button className={section === 'products' ? 'selected' : ''} onClick={() => setSection('products')}>Product management <span>{items.length}</span></button><button className={section === 'orders' ? 'selected' : ''} onClick={() => setSection('orders')}>Orders <span>{orders.length}</span></button></div>
     {error && <div className="admin-error" role="alert"><AlertTriangle size={15}/>{error}<button onClick={() => setError('')} aria-label="Dismiss message"><X size={15}/></button></div>}
     {loading && !summary ? <div className="admin-loading">Loading your dashboard…</div> : section === 'overview' ? <>
       <div className="admin-kpi-grid">
@@ -342,11 +377,20 @@ function AdminPage({ account, onShop }) {
         <AdminKpi label="Out of stock" value={summary?.outOfStock ?? '—'} detail="Needs an inventory update" tone="muted"/>
         <AdminKpi label="Inventory value" value={summary ? money(summary.inventoryValue) : '—'} detail="Current price × units in stock"/>
         <AdminKpi label="Customer accounts" value={summary?.customers ?? '—'} detail="Registered customer accounts"/>
+        <AdminKpi label="Orders" value={summary?.orders ?? '—'} detail="All customer orders"/>
+        <AdminKpi label="Awaiting fulfilment" value={summary?.pendingOrders ?? '—'} detail="Placed or processing" tone="warning"/>
+        <AdminKpi label="Recorded paid total" value={summary ? money(summary.paidRevenue) : '—'} detail="Manual payment records only"/>
       </div>
-      <div className="admin-overview-grid"><section className="admin-panel"><div className="admin-panel-head"><div><span className="eyebrow">INVENTORY CHECK</span><h2>Needs attention</h2></div><button className="text-action" onClick={() => setSection('products')}>Manage products <ArrowRight size={14}/></button></div>{items.filter(product => Number(product.stock) <= 5).slice(0, 6).length ? <div className="attention-list">{items.filter(product => Number(product.stock) <= 5).slice(0, 6).map(product => <div key={product.id}><span><b>{product.name}</b><small>{product.category}</small></span><strong className={Number(product.stock) === 0 ? 'stock-out' : 'stock-low'}>{Number(product.stock) === 0 ? 'Out of stock' : `${product.stock} left`}</strong></div>)}</div> : <p className="admin-empty-note">All products have more than five units in stock.</p>}</section><section className="admin-panel admin-preview-panel"><span className="admin-preview-icon"><ShieldCheck size={18}/></span><span className="eyebrow">STORE REPORTING</span><h2>Orders and revenue</h2><p>Sales KPIs will appear here when real order and payment processing is connected. The current checkout is a preview.</p></section></div>
-    </> : <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CATALOGUE</span><h2>Product management <span>({filtered.length})</span></h2></div><button className="button-primary admin-add-button" onClick={() => setEditor(null)}><Plus size={16}/> Add product</button></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search products…" aria-label="Search products"/></label><select value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter by category"><option>All categories</option>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></div>{filtered.length ? <div className="admin-table-scroll"><table className="admin-product-table"><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><span className="admin-product-name"><b>{product.name}</b><small>{product.model}</small></span></td><td>{product.category}</td><td><b>{money(product.price)}</b>{product.old > product.price && <small className="admin-discount-tag">{Math.round((1-product.price/product.old)*100)}% off</small>}</td><td><span className={`admin-stock-pill ${product.stock > 5 ? 'stock-good' : product.stock > 0 ? 'stock-low-bg' : 'stock-zero'}`}>{product.stock ?? 0} units</span></td><td><span className="admin-row-actions"><button onClick={() => setEditor(product)} aria-label={`Edit ${product.name}`} title="Edit product"><Pencil size={15}/></button><button className="danger-action" onClick={() => deleteProduct(product)} aria-label={`Delete ${product.name}`} title="Delete product"><Trash2 size={15}/></button></span></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No products match this search.</div>}</section>}
+      <div className="admin-overview-grid"><section className="admin-panel"><div className="admin-panel-head"><div><span className="eyebrow">INVENTORY CHECK</span><h2>Needs attention</h2></div><button className="text-action" onClick={() => setSection('products')}>Manage products <ArrowRight size={14}/></button></div>{items.filter(product => Number(product.stock) <= 5).slice(0, 6).length ? <div className="attention-list">{items.filter(product => Number(product.stock) <= 5).slice(0, 6).map(product => <div key={product.id}><span><b>{product.name}</b><small>{product.category}</small></span><strong className={Number(product.stock) === 0 ? 'stock-out' : 'stock-low'}>{Number(product.stock) === 0 ? 'Out of stock' : `${product.stock} left`}</strong></div>)}</div> : <p className="admin-empty-note">All products have more than five units in stock.</p>}</section><section className="admin-panel admin-preview-panel"><span className="admin-preview-icon"><ShieldCheck size={18}/></span><span className="eyebrow">STORE REPORTING</span><h2>Orders and revenue</h2><p>{summary?.orders || 0} persisted order records. Order totals are not counted as revenue until an admin records payment; no payment gateway is connected.</p><button className="text-action" onClick={() => setSection('orders')}>Review orders <ArrowRight size={14}/></button></section></div>
+    </> : section === 'products' ? <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">CATALOGUE</span><h2>Product management <span>({filtered.length})</span></h2></div><button className="button-primary admin-add-button" onClick={() => setEditor(null)}><Plus size={16}/> Add product</button></div><div className="admin-product-filters"><label className="search-box"><Search size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search products…" aria-label="Search products"/></label><select value={category} onChange={event => setCategory(event.target.value)} aria-label="Filter by category"><option>All categories</option>{categories.map(item => <option key={item.name}>{item.name}</option>)}</select></div>{filtered.length ? <div className="admin-table-scroll"><table className="admin-product-table"><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><span className="admin-product-name"><b>{product.name}</b><small>{product.model}</small></span></td><td>{product.category}</td><td><b>{money(product.price)}</b>{product.old > product.price && <small className="admin-discount-tag">{Math.round((1-product.price/product.old)*100)}% off</small>}</td><td><span className={`admin-stock-pill ${product.stock > 5 ? 'stock-good' : product.stock > 0 ? 'stock-low-bg' : 'stock-zero'}`}>{product.stock ?? 0} units</span></td><td><span className="admin-row-actions"><button onClick={() => setEditor(product)} aria-label={`Edit ${product.name}`} title="Edit product"><Pencil size={15}/></button><button className="danger-action" onClick={() => deleteProduct(product)} aria-label={`Delete ${product.name}`} title="Delete product"><Trash2 size={15}/></button></span></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No products match this search.</div>}</section> : <AdminOrders orders={orders} onStatusChange={updateOrder}/ >}
     {editor !== undefined && <ProductEditor product={editor} saving={saving} onClose={() => setEditor(undefined)} onSave={saveProduct}/>}
   </section>;
+}
+
+function AdminOrders({orders,onStatusChange}) {
+  const statusTransitions = { Placed: ['Processing', 'Cancelled'], Processing: ['Packed', 'Cancelled'], Packed: ['Shipped', 'Cancelled'], Shipped: ['Out for Delivery'], 'Out for Delivery': ['Delivered'] };
+  const paymentTransitions = { pending: ['paid'], paid: ['refunded'], refunded: [] };
+  return <section className="admin-products-panel"><div className="admin-products-heading"><div><span className="eyebrow">FULFILMENT</span><h2>Order management <span>({orders.length})</span></h2></div></div>{orders.length ? <div className="admin-table-scroll"><table className="admin-product-table admin-orders-table"><thead><tr><th>Order / customer</th><th>Items</th><th>Total</th><th>Order status</th><th>Payment</th></tr></thead><tbody>{orders.map(order=><tr key={order.id}><td><span className="admin-product-name"><b>{order.number}</b><small>{order.customerName} · {order.customerEmail}</small><small>{new Date(order.createdAt).toLocaleDateString('en-IN')}</small></span></td><td>{order.items.map(item=>`${item.name} ×${item.quantity}`).join(', ')}</td><td><b>{money(order.total)}</b></td><td><select aria-label={`Update status for ${order.number}`} value={order.status} disabled={!statusTransitions[order.status]} onChange={event=>onStatusChange(order,{status:event.target.value})}>{[order.status,...(statusTransitions[order.status] || [])].map(status=><option key={status}>{status}</option>)}</select></td><td><select aria-label={`Update payment for ${order.number}`} value={order.paymentStatus} disabled={order.status==='Cancelled'||order.paymentStatus==='refunded'} onChange={event=>onStatusChange(order,{paymentStatus:event.target.value})}>{[order.paymentStatus,...(paymentTransitions[order.paymentStatus] || [])].map(status=><option key={status} value={status}>{status}</option>)}</select><small className="payment-method-label">{order.paymentMethod.toUpperCase()}</small></td></tr>)}</tbody></table></div> : <div className="admin-empty-note">No customer orders yet.</div>}<p className="storage-note">Payment status changes are manual records; no payment gateway is connected.</p></section>;
 }
 
 function AdminKpi({label,value,detail,tone=''}) {
@@ -412,27 +456,36 @@ function CompareDialog({products:items,onClose,onAdd}) {
   return <div className="modal-layer" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="compare-modal" role="dialog" aria-modal="true" aria-label="Compare components"><div className="drawer-head"><div><span className="eyebrow">SIDE BY SIDE</span><h2>Find your fit <span>({items.length})</span></h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X/></button></div><div className="compare-table" style={{'--compare-columns':items.length}}><div className="compare-label"></div>{items.map(p=><div className="compare-item" key={p.id}><img src={photo(p.image)} alt=""/><b>{p.name}</b><small>{p.model}</small><strong>{money(p.price)}</strong><button className="button-primary" onClick={()=>onAdd(p)}>Add to bag</button></div>)}<div className="compare-label">Category</div>{items.map(p=><div className="compare-value" key={p.id}>{p.category}</div>)}<div className="compare-label">Customer rating</div>{items.map(p=><div className="compare-value" key={p.id}>{p.reviews>0?<><span className="star">★</span> {p.rating} ({p.reviews})</>:'No reviews yet'}</div>)}<div className="compare-label">Price</div>{items.map(p=><div className="compare-value" key={p.id}>{money(p.price)}</div>)}<div className="compare-label">Availability</div>{items.map(p=><div className="compare-value available" key={p.id}><Check size={13}/> Demo listing</div>)}</div><p className="demo-note">Comparison uses the available demo catalogue fields. Confirm product specifications before purchase.</p></section></div>;
 }
 
-function CheckoutPage({items,total,onBack,onPlace}) {
+function CheckoutPage({items,total,error,onBack,onPlace}) {
   const [payment,setPayment]=useState('upi');
+  const [submitting,setSubmitting]=useState(false);
+  async function submitOrder(event) {
+    event.preventDefault();
+    if (submitting) return;
+    const values=Object.fromEntries(new FormData(event.currentTarget).entries());
+    setSubmitting(true);
+    try { await onPlace({...values,payment}); }
+    finally { setSubmitting(false); }
+  }
   return <section className="checkout-page">
     <button className="back-link" onClick={onBack}><ChevronLeft size={16}/> Back to your bag</button>
-    <div className="checkout-title"><div className="eyebrow"><span className="eyebrow-line"/>JUST ONE MORE THING</div><h1>Delivery <em>details.</em></h1><p>This is a preview checkout. Nothing is charged or sent to a store.</p></div>
-    <div className="checkout-layout"><form className="checkout-form" onSubmit={async e=>{e.preventDefault();const values=Object.fromEntries(new FormData(e.currentTarget).entries());await onPlace({...values,payment})}}>
-      <div className="checkout-section-head"><span>01</span><div><b>Who’s receiving it?</b><small>We need these details for this preview only.</small></div></div>
+    <div className="checkout-title"><div className="eyebrow"><span className="eyebrow-line"/>JUST ONE MORE THING</div><h1>Delivery <em>details.</em></h1><p>Your order will be saved to your account. Online payment and shipping labels are not connected yet.</p></div>
+    <div className="checkout-layout"><form className="checkout-form" onSubmit={submitOrder}>
+      <div className="checkout-section-head"><span>01</span><div><b>Who’s receiving it?</b><small>These details will be saved with your order.</small></div></div>
       <div className="form-grid"><label>Full name<input name="name" autoComplete="name" required minLength="2" placeholder="Your name"/></label><label>Email address<input name="email" type="email" autoComplete="email" required placeholder="you@example.com"/></label><label>Mobile number<input name="phone" type="tel" autoComplete="tel" required pattern="[0-9+() -]{8,16}" placeholder="+91 98765 43210"/></label><label>PIN code<input name="pincode" inputMode="numeric" autoComplete="postal-code" required pattern="[0-9]{6}" maxLength="6" placeholder="6-digit PIN code"/></label><label className="form-wide">Street address<input name="address" autoComplete="street-address" required minLength="5" placeholder="House number and street"/></label><label>City<input name="city" autoComplete="address-level2" required placeholder="City"/></label><label>State<input name="state" autoComplete="address-level1" required placeholder="State"/></label></div>
-      <div className="checkout-section-head payment-head"><span>02</span><div><b>Payment preference</b><small>Selection is for demonstration only.</small></div></div>
-      <div className="payment-options"><label className={payment==='upi'?'payment-option active':'payment-option'}><input type="radio" name="payment" value="upi" checked={payment==='upi'} onChange={()=>setPayment('upi')}/><span className="radio-dot"/><span><b>UPI</b><small>Preview only · no payment request</small></span></label><label className={payment==='cod'?'payment-option active':'payment-option'}><input type="radio" name="payment" value="cod" checked={payment==='cod'} onChange={()=>setPayment('cod')}/><span className="radio-dot"/><span><b>Cash on delivery</b><small>Preview only · no shipment created</small></span></label></div>
-      <button className="button-primary submit-order" type="submit">Save order preview <ArrowRight size={16}/></button>
-    </form><aside className="checkout-summary"><span className="eyebrow">YOUR ORDER PREVIEW</span><h2>Looking good.</h2><div className="checkout-items">{items.map(item=><div className="checkout-item" key={item.id}><img src={photo(item.image)} alt=""/><span><b>{item.name}</b><small>Qty {item.qty}</small></span><strong>{money(item.price*item.qty)}</strong></div>)}</div><div className="checkout-total"><span>Items subtotal</span><b>{money(total)}</b></div><p className="preview-warning"><ShieldCheck size={15}/> Shipping, taxes, inventory, and payment are not processed in this project preview.</p></aside></div>
+      <div className="checkout-section-head payment-head"><span>02</span><div><b>Payment preference</b><small>This records your preference; no payment is collected.</small></div></div>
+      <div className="payment-options"><label className={payment==='upi'?'payment-option active':'payment-option'}><input type="radio" name="payment" value="upi" checked={payment==='upi'} onChange={()=>setPayment('upi')}/><span className="radio-dot"/><span><b>UPI</b><small>Payment pending · gateway not connected</small></span></label><label className={payment==='cod'?'payment-option active':'payment-option'}><input type="radio" name="payment" value="cod" checked={payment==='cod'} onChange={()=>setPayment('cod')}/><span className="radio-dot"/><span><b>Cash on delivery</b><small>Payment preference only</small></span></label></div>
+      {error&&<p className="checkout-error" role="alert">{error}</p>}<button className="button-primary submit-order" type="submit" disabled={submitting}>{submitting?'Placing order…':'Place order'} {!submitting&&<ArrowRight size={16}/>}</button>
+    </form><aside className="checkout-summary"><span className="eyebrow">ORDER SUMMARY</span><h2>Looking good.</h2><div className="checkout-items">{items.map(item=><div className="checkout-item" key={item.id}><img src={photo(item.image)} alt=""/><span><b>{item.name}</b><small>Qty {item.qty}</small></span><strong>{money(item.price*item.qty)}</strong></div>)}</div><div className="checkout-total"><span>Items subtotal</span><b>{money(total)}</b></div><p className="preview-warning"><ShieldCheck size={15}/> Stock is rechecked and reserved when placing the order. Payment, tax, and delivery charges are not connected.</p></aside></div>
   </section>;
 }
 
 function OrderConfirmation({order,onShop,onOrders}) {
-  return <section className="order-confirmation"><div className="confirmation-mark"><Check size={30}/></div><span className="eyebrow">SAVED IN THIS BROWSER</span><h1>Your order <em>preview is ready.</em></h1><p className="confirmation-text">This is a local project preview only. No store received this order and no payment or delivery was arranged.</p><div className="confirmation-card"><div><span>Preview reference</span><b>{order?.number}</b></div><div><span>Items subtotal</span><b>{money(order?.total||0)}</b></div><div><span>Delivery contact</span><b>{order?.delivery?.name}</b><small>{order?.delivery?.email} · {order?.delivery?.phone}</small></div><div><span>Delivery address</span><b>{order?.delivery?.address}</b><small>{order?.delivery?.city}, {order?.delivery?.state} {order?.delivery?.pincode}</small></div></div><div className="confirmation-actions"><button className="button-primary" onClick={onOrders}>View order history <ArrowRight size={16}/></button><button className="button-text" onClick={onShop}>Continue browsing</button></div></section>;
+  return <section className="order-confirmation"><div className="confirmation-mark"><Check size={30}/></div><span className="eyebrow">ORDER SAVED TO YOUR ACCOUNT</span><h1>Your order is <em>placed.</em></h1><p className="confirmation-text">Payment is pending. This project does not yet collect payment or arrange delivery; the order is available to the store admin for review.</p><div className="confirmation-card"><div><span>Order reference</span><b>{order?.number}</b></div><div><span>Order total</span><b>{money(order?.total||0)}</b></div><div><span>Order / payment status</span><b>{order?.status} · {order?.paymentStatus || 'pending'}</b></div><div><span>Delivery address</span><b>{order?.delivery?.address}</b><small>{order?.delivery?.city}, {order?.delivery?.state} {order?.delivery?.pincode}</small></div></div><div className="confirmation-actions"><button className="button-primary" onClick={onOrders}>View my orders <ArrowRight size={16}/></button><button className="button-text" onClick={onShop}>Continue browsing</button></div></section>;
 }
 
 function OrdersPage({orders,onShop}) {
-  return <section className="orders-page"><button className="back-link" onClick={onShop}><ChevronLeft size={16}/> Back to shop</button><div className="checkout-title"><div className="eyebrow"><span className="eyebrow-line"/>YOUR RECENT ACTIVITY</div><h1>Order <em>history.</em></h1><p>Preview orders saved in this browser. Live order tracking is not connected yet.</p></div>{orders.length?<div className="orders-list">{orders.map(order=><article className="order-card" key={order.number}><div className="order-card-head"><span><small>PREVIEW REFERENCE</small><b>{order.number}</b></span><span className="order-status"><span/> {order.status}</span></div><div className="order-card-items">{order.items.map(item=><div key={item.id}><img src={photo(item.image)} alt=""/><span><b>{item.name}</b><small>Qty {item.qty}</small></span></div>)}</div><div className="order-card-foot"><span>{new Date(order.createdAt).toLocaleDateString('en-IN',{year:'numeric',month:'short',day:'numeric'})}</span><b>{money(order.total)}</b></div></article>)}</div>:<div className="empty-state"><PackageCheck size={24}/><b>No orders yet</b><span>When you create an order preview, it will appear here.</span><button onClick={onShop}>Browse components</button></div>}<p className="storage-note">Order summaries stay in this browser only. Delivery details are not saved in order history.</p></section>;
+  return <section className="orders-page"><button className="back-link" onClick={onShop}><ChevronLeft size={16}/> Back to shop</button><div className="checkout-title"><div className="eyebrow"><span className="eyebrow-line"/>YOUR RECENT ACTIVITY</div><h1>Order <em>history.</em></h1><p>Orders placed from this account, with current status and payment state.</p></div>{orders.length?<div className="orders-list">{orders.map(order=><article className="order-card" key={order.number}><div className="order-card-head"><span><small>ORDER REFERENCE</small><b>{order.number}</b></span><span className="order-status"><span/> {order.status} · {order.paymentStatus || 'pending'}</span></div><div className="order-card-items">{order.items.map(item=><div key={item.productId || item.id}><img src={photo(item.image)} alt=""/><span><b>{item.name}</b><small>Qty {item.quantity ?? item.qty}</small></span></div>)}</div><div className="order-card-foot"><span>{new Date(order.createdAt).toLocaleDateString('en-IN',{year:'numeric',month:'short',day:'numeric'})}</span><b>{money(order.total)}</b></div></article>)}</div>:<div className="empty-state"><PackageCheck size={24}/><b>No orders yet</b><span>Your submitted orders will appear here.</span><button onClick={onShop}>Browse components</button></div>}<p className="storage-note">Order records are stored with your account. Payment processing and delivery tracking are not connected yet.</p></section>;
 }
 
 function Builder({onBack,onAdd}) {
