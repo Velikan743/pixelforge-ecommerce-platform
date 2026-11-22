@@ -532,7 +532,7 @@ app.patch('/api/admin/orders/:id', requireAuth, requirePasswordChangeComplete, r
     if (status === 'Cancelled' && order.stockReserved) {
       const cancelled = await Order.findOneAndUpdate(
         { _id: order._id, status: { $nin: ['Cancelled', 'Delivered'] }, stockReserved: true },
-        { $set: { status: 'Cancelled', stockReserved: false } }, { new: true },
+        { $set: { status: 'Cancelled', stockReserved: false, ...(paymentStatus!==undefined?{paymentStatus}:{}) } }, { new: true },
       );
       if (!cancelled) return res.status(409).json({ error: 'This order has already changed. Refresh and try again.' });
       for (const item of cancelled.items) {
@@ -702,6 +702,30 @@ app.get('/api/admin/inventory',requireAuth,requirePasswordChangeComplete,require
     const [products,movements,openOrders]=await Promise.all([Product.find({}).sort({category:1,sku:1,name:1}).lean(),InventoryMovement.find({}).sort({createdAt:-1}).limit(150).lean(),Order.find({stockReserved:true},{items:1}).lean()]);
     const reserved=new Map();for(const order of openOrders)for(const item of order.items)reserved.set(item.productId,(reserved.get(item.productId)||0)+Number(item.quantity||0));
     res.json({items:products.map(product=>({...productJson(product),reservedStock:reserved.get(String(product.id||product._id))||0})),movements:movements.map(movement=>({...movement,id:String(movement._id)}))});
+  } catch(error){next(error);}
+});
+app.get('/api/admin/reports',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try {
+    const period=String(req.query.period||'30d');const end=new Date();let start=new Date(end);let bucketCount;let bucketMode;
+    if(period==='7d'){start.setUTCHours(0,0,0,0);start.setUTCDate(start.getUTCDate()-6);bucketCount=7;bucketMode='day';}
+    else if(period==='12m'){start=new Date(Date.UTC(end.getUTCFullYear(),end.getUTCMonth()-11,1));bucketCount=12;bucketMode='month';}
+    else if(period==='year'){start=new Date(Date.UTC(end.getUTCFullYear(),0,1));bucketCount=end.getUTCMonth()+1;bucketMode='month';}
+    else {start.setUTCHours(0,0,0,0);start.setUTCDate(start.getUTCDate()-29);bucketCount=30;bucketMode='day';}
+    const paidCondition={$eq:['$paymentStatus','paid']};
+    const [aggregated]=await Order.aggregate([{$match:{createdAt:{$gte:start,$lte:end}}},{$facet:{
+      totals:[{$group:{_id:null,orders:{$sum:1},paidOrders:{$sum:{$cond:[paidCondition,1,0]}},paidRevenue:{$sum:{$cond:[paidCondition,'$total',0]}},refunds:{$sum:{$cond:[{$eq:['$paymentStatus','refunded']},'$total',0]}},refundedOrders:{$sum:{$cond:[{$eq:['$paymentStatus','refunded']},1,0]}}}}],
+      trend:[{$group:{_id:{$dateToString:{format:bucketMode==='month'?'%Y-%m':'%Y-%m-%d',date:'$createdAt',timezone:'UTC'}},orders:{$sum:1},revenue:{$sum:{$cond:[paidCondition,'$total',0]}}}}],
+      categories:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:{$ifNull:['$items.category','Uncategorized']},revenue:{$sum:{$multiply:[{$ifNull:['$items.price',0]},{$ifNull:['$items.quantity',0]}]}}}},{$sort:{revenue:-1}},{$limit:8}],
+      topProducts:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:'$items.name',units:{$sum:{$ifNull:['$items.quantity',0]}},revenue:{$sum:{$multiply:[{$ifNull:['$items.price',0]},{$ifNull:['$items.quantity',0]}]}}}},{$sort:{revenue:-1}},{$limit:10}],
+      units:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:null,units:{$sum:{$ifNull:['$items.quantity',0]}}}}],
+    }}]);
+    const makeKey=date=>bucketMode==='month'?`${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,'0')}`:date.toISOString().slice(0,10);
+    const trend=[];const cursor=new Date(start);
+    for(let index=0;index<bucketCount;index++){const label=bucketMode==='month'?cursor.toLocaleDateString('en-IN',{month:'short',timeZone:'UTC'}):cursor.toLocaleDateString('en-IN',{day:'numeric',month:'short',timeZone:'UTC'});trend.push({key:makeKey(cursor),label,revenue:0,orders:0});if(bucketMode==='month')cursor.setUTCMonth(cursor.getUTCMonth()+1);else cursor.setUTCDate(cursor.getUTCDate()+1);}
+    const report=aggregated||{};const totals=report.totals?.[0]||{};const trendByKey=new Map((report.trend||[]).map(item=>[item._id,item]));
+    for(const bucket of trend){const saved=trendByKey.get(bucket.key);if(saved){bucket.orders=saved.orders;bucket.revenue=saved.revenue;}}
+    const paidRevenue=Number(totals.paidRevenue)||0;const paidOrders=Number(totals.paidOrders)||0;
+    res.json({period,start,end,totals:{orders:Number(totals.orders)||0,paidOrders,paidRevenue,averageOrderValue:paidOrders?paidRevenue/paidOrders:0,refunds:Number(totals.refunds)||0,refundedOrders:Number(totals.refundedOrders)||0,units:Number(report.units?.[0]?.units)||0},trend:trend.map(({key,...item})=>item),categories:(report.categories||[]).map(item=>({name:item._id,revenue:item.revenue})),topProducts:(report.topProducts||[]).map(item=>({name:item._id,units:item.units,revenue:item.revenue}))});
   } catch(error){next(error);}
 });
 app.patch('/api/admin/products/:id/stock',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
