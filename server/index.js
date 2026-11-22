@@ -26,7 +26,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/account') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders') || req.path.startsWith('/api/builds') || req.path.startsWith('/api/categories') || req.path.startsWith('/api/brands'))) {
+  } else if (origin && (req.path.startsWith('/api/auth') || req.path.startsWith('/api/account') || req.path.startsWith('/api/admin') || req.path.startsWith('/api/products') || req.path.startsWith('/api/orders') || req.path.startsWith('/api/builds') || req.path.startsWith('/api/coupons') || req.path.startsWith('/api/categories') || req.path.startsWith('/api/brands'))) {
     return res.status(403).json({ error: 'This site is not allowed to use the account service.' });
   }
   if (req.method === 'OPTIONS') return res.sendStatus(origin && allowedOrigins.has(origin) ? 204 : 403);
@@ -165,6 +165,7 @@ const orderItemSchema = new mongoose.Schema({
   category: { type: String, default: '' },
   image: { type: String, default: '' },
   price: { type: Number, required: true, min: 0 },
+  discount: { type: Number, default: 0, min: 0 },
   quantity: { type: Number, required: true, min: 1 },
 }, { _id: false });
 const orderSchema = new mongoose.Schema({
@@ -173,6 +174,9 @@ const orderSchema = new mongoose.Schema({
   customerName: { type: String, required: true },
   customerEmail: { type: String, required: true },
   items: { type: [orderItemSchema], required: true },
+  subtotal: { type: Number, required: true, min: 0 },
+  discount: { type: Number, default: 0, min: 0 },
+  couponCode: { type: String, default: '' },
   total: { type: Number, required: true, min: 0 },
   delivery: {
     name: { type: String, required: true }, email: { type: String, required: true },
@@ -199,6 +203,17 @@ const inventoryMovementSchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 inventoryMovementSchema.index({ createdAt: -1 });
 const InventoryMovement = mongoose.models.InventoryMovement || mongoose.model('InventoryMovement', inventoryMovementSchema);
+const couponSchema = new mongoose.Schema({
+  code: { type: String, required: true, unique: true, uppercase: true, trim: true, minlength: 3, maxlength: 32 },
+  discountType: { type: String, enum: ['percent','fixed'], required: true },
+  value: { type: Number, required: true, min: 1 },
+  minSubtotal: { type: Number, default: 0, min: 0 },
+  maxDiscount: { type: Number, default: 0, min: 0 },
+  startsAt: { type: Date, required: true }, endsAt: { type: Date, required: true },
+  usageLimit: { type: Number, default: 0, min: 0 }, usedCount: { type: Number, default: 0, min: 0 },
+  categories: { type: [String], default: [] }, active: { type: Boolean, default: true },
+}, { timestamps: true, versionKey: false });
+const Coupon = mongoose.models.Coupon || mongoose.model('Coupon', couponSchema);
 async function writeInventoryMovement(product,{change,previousStock,newStock,reason,actor=''}) {
   return InventoryMovement.create({productId:String(product.id||product._id),productName:product.name,sku:product.sku||'',change,previousStock,newStock,reason,actor});
 }
@@ -436,6 +451,19 @@ app.delete('/api/builds/:id',requireAuth,requirePasswordChangeComplete,async(req
   try {const build=await SavedBuild.findOneAndDelete({_id:req.params.id,customer:req.account._id});if(!build)return res.status(404).json({error:'Saved build not found.'});res.json({ok:true,id:String(build._id)});}
   catch(error){next(error);}
 });
+app.post('/api/coupons/validate',requireAuth,requirePasswordChangeComplete,async(req,res,next)=>{
+  try{
+    if(req.account.role!=='customer')return res.status(403).json({error:'Customer accounts are required to use coupons.'});
+    const code=String(req.body?.code||'').trim().toUpperCase();const lines=req.body?.items;
+    if(!/^[A-Z0-9_-]{3,32}$/.test(code))return res.status(400).json({error:'Enter a valid coupon code.'});
+    if(!Array.isArray(lines)||lines.length<1||lines.length>50)return res.status(400).json({error:'Add items to your bag before applying a coupon.'});
+    const quantities=new Map();for(const line of lines){const id=String(line?.id||'').trim();const quantity=Number(line?.quantity);if(!id||!Number.isInteger(quantity)||quantity<1||quantity>20)return res.status(400).json({error:'A product in your bag has an invalid quantity.'});quantities.set(id,(quantities.get(id)||0)+quantity);}
+    if([...quantities.values()].some(quantity=>quantity>20))return res.status(400).json({error:'A product quantity cannot exceed 20.'});
+    const items=[];for(const [id,quantity] of quantities){const product=await findProductById(id);if(!product)return res.status(409).json({error:'A product in your bag is no longer available.'});items.push({productId:String(product.id||product._id),category:product.category,price:Number(product.price)||0,quantity});}
+    const result=await calculateCoupon(code,items);if(result.error)return res.status(400).json({error:result.error});
+    res.json({code:result.coupon.code,discount:result.discount,subtotal:result.subtotal,eligibleSubtotal:result.eligibleSubtotal,discountType:result.coupon.discountType,value:result.coupon.value});
+  }catch(error){next(error);}
+});
 app.get('/api/orders', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
   try {
     const orders = await Order.find({ customer: req.account._id }).sort({ createdAt: -1 }).lean();
@@ -444,6 +472,7 @@ app.get('/api/orders', requireAuth, requirePasswordChangeComplete, async (req, r
 });
 app.post('/api/orders', requireAuth, requirePasswordChangeComplete, async (req, res, next) => {
   const reserved = [];
+  let reservedCoupon=null;
   try {
     if (req.account.role !== 'customer') return res.status(403).json({ error: 'Customer accounts are required to place orders.' });
     if (mongoose.connection.readyState !== 1) return res.status(503).json({ error: 'Orders require a connected database.' });
@@ -489,16 +518,30 @@ app.post('/api/orders', requireAuth, requirePasswordChangeComplete, async (req, 
       orderItems.push({ productId: String(product.id || product._id), name: product.name, model: product.model, category: product.category, image: product.image, price: product.price, quantity });
     }
 
+    const subtotal=orderItems.reduce((sum,item)=>sum+item.price*item.quantity,0);
+    const couponCode=String(req.body?.couponCode||'').trim().toUpperCase();let couponDiscount=0;
+    if(couponCode){
+      const calculation=await calculateCoupon(couponCode,orderItems);
+      if(calculation.error){for(const prior of reserved)await Product.updateOne({_id:prior._id},{$inc:{stock:prior.quantity}});reserved.length=0;return res.status(400).json({error:calculation.error});}
+      const now=new Date();const claimFilter={_id:calculation.coupon._id,active:true,startsAt:{$lte:now},endsAt:{$gte:now},...(calculation.coupon.usageLimit>0?{usedCount:{$lt:calculation.coupon.usageLimit}}:{})};
+      reservedCoupon=await Coupon.findOneAndUpdate(claimFilter,{$inc:{usedCount:1}},{new:true});
+      if(!reservedCoupon){for(const prior of reserved)await Product.updateOne({_id:prior._id},{$inc:{stock:prior.quantity}});reserved.length=0;return res.status(409).json({error:'That coupon was just used or deactivated. Refresh the cart and try again.'});}
+      couponDiscount=calculation.discount;
+      const eligible=orderItems.filter(item=>!reservedCoupon.categories.length||reservedCoupon.categories.includes(item.category));let remaining=couponDiscount;
+      eligible.forEach((item,index)=>{const lineTotal=item.price*item.quantity;const allocated=index===eligible.length-1?remaining:Math.floor(couponDiscount*lineTotal/calculation.eligibleSubtotal);item.discount=allocated;remaining-=allocated;});
+    }
+
     const order = await Order.create({
       number: `TP-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`,
       customer: req.account._id, customerName: req.account.name, customerEmail: req.account.email,
-      items: orderItems, total: orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0),
+      items: orderItems, subtotal, discount:couponDiscount, couponCode, total:Math.max(0,subtotal-couponDiscount),
       delivery: delivery.value, paymentMethod: req.body.paymentMethod, status: 'Placed', paymentStatus: 'pending', stockReserved: true,
     });
     await Promise.all(reserved.map(item=>writeInventoryMovement(item.product,{change:-item.quantity,previousStock:item.previousStock,newStock:item.newStock,reason:`Stock reserved for ${order.number}`,actor:req.account.email}).catch(error=>console.error('Could not record stock reservation:',error.message))));
     res.status(201).json({ order: publicOrder(order) });
   } catch (error) {
     for (const prior of reserved) await Product.updateOne({ _id: prior._id }, { $inc: { stock: prior.quantity } }).catch(() => {});
+    if(reservedCoupon)await Coupon.updateOne({_id:reservedCoupon._id,usedCount:{$gt:0}},{$inc:{usedCount:-1}}).catch(()=>{});
     next(error);
   }
 });
@@ -623,8 +666,37 @@ function parseBrandInput(body) {
   if(website&&!/^https?:\/\//i.test(website))return{error:'Website must start with http:// or https://.'};
   return{value:{name,description,website,active:body?.active===undefined?true:Boolean(body.active)}};
 }
+function parseCouponInput(body) {
+  const code=String(body?.code||'').trim().toUpperCase();const discountType=String(body?.discountType||'');const value=Number(body?.value);
+  const minSubtotal=Number(body?.minSubtotal||0);const maxDiscount=Number(body?.maxDiscount||0);const usageLimit=Number(body?.usageLimit||0);
+  const startsAt=new Date(body?.startsAt);const endsAt=new Date(body?.endsAt);const categories=Array.isArray(body?.categories)?[...new Set(body.categories.map(item=>String(item).trim()).filter(Boolean))]:[];
+  if(!/^[A-Z0-9_-]{3,32}$/.test(code))return{error:'Coupon code must be 3 to 32 letters, numbers, underscores, or hyphens.'};
+  if(!['percent','fixed'].includes(discountType))return{error:'Choose a percentage or fixed amount discount.'};
+  if(!Number.isFinite(value)||value<1||(discountType==='percent'&&value>90)||value>100000000)return{error:discountType==='percent'?'Percentage discount must be from 1 to 90.':'Enter a valid fixed discount amount.'};
+  if(!Number.isFinite(minSubtotal)||minSubtotal<0||minSubtotal>100000000||!Number.isFinite(maxDiscount)||maxDiscount<0||maxDiscount>100000000)return{error:'Minimum spend or maximum discount is invalid.'};
+  if(!Number.isInteger(usageLimit)||usageLimit<0||usageLimit>10000000)return{error:'Usage limit must be a whole number from zero to 10,000,000.'};
+  if(!Number.isFinite(startsAt.getTime())||!Number.isFinite(endsAt.getTime())||endsAt<=startsAt)return{error:'Enter a valid coupon start and end date.'};
+  if(categories.length>20||categories.some(item=>item.length>80))return{error:'Choose up to 20 valid product categories.'};
+  return{value:{code,discountType,value,minSubtotal,maxDiscount,usageLimit,startsAt,endsAt,categories,active:body?.active===undefined?true:Boolean(body.active)}};
+}
+async function calculateCoupon(code,items) {
+  const coupon=await Coupon.findOne({code:String(code||'').trim().toUpperCase()}).lean();
+  if(!coupon||!coupon.active)return{error:'That coupon code is not active.'};
+  const now=new Date();if(now<coupon.startsAt)return{error:'That coupon is not active yet.'};if(now>coupon.endsAt)return{error:'That coupon has expired.'};
+  if(coupon.usageLimit>0&&coupon.usedCount>=coupon.usageLimit)return{error:'That coupon has reached its usage limit.'};
+  const subtotal=items.reduce((sum,item)=>sum+(Number(item.price)||0)*(Number(item.quantity)||0),0);
+  if(subtotal<coupon.minSubtotal)return{error:`Your cart must be at least ${moneyText(coupon.minSubtotal)} to use this code.`};
+  const eligibleSubtotal=items.filter(item=>!coupon.categories.length||coupon.categories.includes(item.category)).reduce((sum,item)=>sum+(Number(item.price)||0)*(Number(item.quantity)||0),0);
+  if(eligibleSubtotal<=0)return{error:'This coupon does not apply to products in your cart.'};
+  let discount=coupon.discountType==='percent'?Math.round(eligibleSubtotal*coupon.value/100):Math.min(eligibleSubtotal,coupon.value);
+  if(coupon.maxDiscount>0)discount=Math.min(discount,coupon.maxDiscount);
+  discount=Math.min(Math.max(0,discount),eligibleSubtotal);
+  return{coupon,subtotal,eligibleSubtotal,discount};
+}
+const moneyText=value=>`₹${Number(value||0).toLocaleString('en-IN')}`;
 function categoryJson(category) { return { id:String(category._id),name:category.name,description:category.description,parent:category.parent,displayOrder:category.displayOrder,active:category.active }; }
 function brandJson(brand) { return { id:String(brand._id),name:brand.name,description:brand.description,website:brand.website,active:brand.active }; }
+function couponJson(coupon) { return {id:String(coupon._id),code:coupon.code,discountType:coupon.discountType,value:coupon.value,minSubtotal:coupon.minSubtotal,maxDiscount:coupon.maxDiscount,startsAt:coupon.startsAt,endsAt:coupon.endsAt,usageLimit:coupon.usageLimit,usedCount:coupon.usedCount,categories:coupon.categories||[],active:coupon.active}; }
 app.get('/api/categories', async (_req,res,next)=>{
   try { const categoriesList=await Category.find({active:true}).sort({displayOrder:1,name:1}).lean(); res.json({items:categoriesList.map(categoryJson)}); }
   catch(error){next(error);}
@@ -697,6 +769,18 @@ app.delete('/api/admin/brands/:id',requireAuth,requirePasswordChangeComplete,req
     await brand.deleteOne(); productBrands.delete(brand.name); res.json({ok:true,id:String(brand._id)});
   } catch(error){next(error);}
 });
+app.get('/api/admin/coupons',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(_req,res,next)=>{
+  try{const items=await Coupon.find({}).sort({createdAt:-1}).lean();res.json({items:items.map(couponJson)});}catch(error){next(error);}
+});
+app.post('/api/admin/coupons',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try{const parsed=parseCouponInput(req.body);if(parsed.error)return res.status(400).json({error:parsed.error});const activeCategories=new Set((await Category.find({active:true},{name:1}).lean()).map(item=>item.name));if(parsed.value.categories.some(name=>!activeCategories.has(name)))return res.status(400).json({error:'Choose active product categories for this coupon.'});const coupon=await Coupon.create({...parsed.value,usedCount:0});res.status(201).json({coupon:couponJson(coupon)});}catch(error){if(error?.code===11000)return res.status(409).json({error:'That coupon code already exists.'});next(error);}
+});
+app.put('/api/admin/coupons/:id',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try{const parsed=parseCouponInput(req.body);if(parsed.error)return res.status(400).json({error:parsed.error});const coupon=await Coupon.findById(req.params.id);if(!coupon)return res.status(404).json({error:'Coupon not found.'});if(coupon.usedCount>0&&coupon.code!==parsed.value.code)return res.status(409).json({error:'This coupon has already been used; its code cannot be changed.'});const activeCategories=new Set((await Category.find({active:true},{name:1}).lean()).map(item=>item.name));if(parsed.value.categories.some(name=>!activeCategories.has(name)))return res.status(400).json({error:'Choose active product categories for this coupon.'});Object.assign(coupon,parsed.value);await coupon.save();res.json({coupon:couponJson(coupon)});}catch(error){if(error?.code===11000)return res.status(409).json({error:'That coupon code already exists.'});next(error);}
+});
+app.delete('/api/admin/coupons/:id',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(req,res,next)=>{
+  try{const coupon=await Coupon.findById(req.params.id);if(!coupon)return res.status(404).json({error:'Coupon not found.'});if(await Order.exists({couponCode:coupon.code}))return res.status(409).json({error:'This coupon appears on an order. Deactivate it to preserve its history.'});await coupon.deleteOne();res.json({ok:true,id:String(coupon._id)});}catch(error){next(error);}
+});
 app.get('/api/admin/inventory',requireAuth,requirePasswordChangeComplete,requireRole('admin'),async(_req,res,next)=>{
   try {
     const [products,movements,openOrders]=await Promise.all([Product.find({}).sort({category:1,sku:1,name:1}).lean(),InventoryMovement.find({}).sort({createdAt:-1}).limit(150).lean(),Order.find({stockReserved:true},{items:1}).lean()]);
@@ -715,8 +799,8 @@ app.get('/api/admin/reports',requireAuth,requirePasswordChangeComplete,requireRo
     const [aggregated]=await Order.aggregate([{$match:{createdAt:{$gte:start,$lte:end}}},{$facet:{
       totals:[{$group:{_id:null,orders:{$sum:1},paidOrders:{$sum:{$cond:[paidCondition,1,0]}},paidRevenue:{$sum:{$cond:[paidCondition,'$total',0]}},refunds:{$sum:{$cond:[{$eq:['$paymentStatus','refunded']},'$total',0]}},refundedOrders:{$sum:{$cond:[{$eq:['$paymentStatus','refunded']},1,0]}}}}],
       trend:[{$group:{_id:{$dateToString:{format:bucketMode==='month'?'%Y-%m':'%Y-%m-%d',date:'$createdAt',timezone:'UTC'}},orders:{$sum:1},revenue:{$sum:{$cond:[paidCondition,'$total',0]}}}}],
-      categories:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:{$ifNull:['$items.category','Uncategorized']},revenue:{$sum:{$multiply:[{$ifNull:['$items.price',0]},{$ifNull:['$items.quantity',0]}]}}}},{$sort:{revenue:-1}},{$limit:8}],
-      topProducts:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:'$items.name',units:{$sum:{$ifNull:['$items.quantity',0]}},revenue:{$sum:{$multiply:[{$ifNull:['$items.price',0]},{$ifNull:['$items.quantity',0]}]}}}},{$sort:{revenue:-1}},{$limit:10}],
+      categories:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:{$ifNull:['$items.category','Uncategorized']},revenue:{$sum:{$subtract:[{$multiply:[{$ifNull:['$items.price',0]},{$ifNull:['$items.quantity',0]}]},{$ifNull:['$items.discount',0]}]}}}},{$sort:{revenue:-1}},{$limit:8}],
+      topProducts:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:'$items.name',units:{$sum:{$ifNull:['$items.quantity',0]}},revenue:{$sum:{$subtract:[{$multiply:[{$ifNull:['$items.price',0]},{$ifNull:['$items.quantity',0]}]},{$ifNull:['$items.discount',0]}]}}}},{$sort:{revenue:-1}},{$limit:10}],
       units:[{$match:{paymentStatus:'paid'}},{$unwind:'$items'},{$group:{_id:null,units:{$sum:{$ifNull:['$items.quantity',0]}}}}],
     }}]);
     const makeKey=date=>bucketMode==='month'?`${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,'0')}`:date.toISOString().slice(0,10);
@@ -888,7 +972,7 @@ async function start() {
   if (sameSite === 'none' && !secureCookie) throw new Error('SameSite=None cookies require COOKIE_SECURE=true.');
   if (process.env.MONGODB_URI) {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
-    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init(), SavedBuild.init(), InventoryMovement.init()]);
+    await Promise.all([Account.init(), Session.init(), Product.init(), Order.init(), Category.init(), Brand.init(), SavedBuild.init(), InventoryMovement.init(), Coupon.init()]);
     await seedTaxonomy();
     await seedCatalogue();
     await seedAdminAccount();
